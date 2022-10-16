@@ -30,13 +30,23 @@
 #undef _ASM_X86_VVAR_H
 #define EMIT_VVAR(name, offset)	\
 	const size_t name ## _offset = offset;
+
+#define EMIT_SBVAR(name, offset)	\
+	const size_t name ## _offset = offset;
+
 #include <asm/vvar.h>
 
 struct vdso_data *arch_get_vdso_data(void *vvar_page)
 {
 	return (struct vdso_data *)(vvar_page + _vdso_data_offset);
 }
+
+struct sbpf_data *arch_get_sbpf_data(void *vvar_page)
+{
+	return (struct sbpf_data *)(vvar_page + _sbpf_data_offset);
+}
 #undef EMIT_VVAR
+#undef EMIT_SBVAR
 
 unsigned int vclocks_used __read_mostly;
 

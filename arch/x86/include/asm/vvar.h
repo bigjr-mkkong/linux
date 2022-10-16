@@ -27,6 +27,9 @@
 #define DECLARE_VVAR(offset, type, name) \
 	EMIT_VVAR(name, offset)
 
+#define DECLARE_SBVAR(offset, type, name) \
+	EMIT_SBVAR(name, offset)
+
 #else
 
 extern char __vvar_page;
@@ -37,19 +40,31 @@ extern char __vvar_page;
 	extern type timens_ ## name[CS_BASES]				\
 	__attribute__((visibility("hidden")));				\
 
+#define DECLARE_SBVAR(offset, type, name)				\
+	extern type sbvar_ ## name[CS_RAW]				\
+	__attribute__((visibility("hidden")));
+
 #define VVAR(name) (vvar_ ## name)
 #define TIMENS(name) (timens_ ## name)
+
+#define SBVAR(name) (sbvar_ ## name)
 
 #define DEFINE_VVAR(type, name)						\
 	type name[CS_BASES]						\
 	__attribute__((section(".vvar_" #name), aligned(16))) __visible
 
+#define DEFINE_SBVAR(type, name)					\
+	type name[CS_RAW]						\
+	__attribute__((section(".sbvar_" #name), align(16))) __visible
+
 #endif
 
 /* DECLARE_VVAR(offset, type, name) */
 
-DECLARE_VVAR(128, struct vdso_data, _vdso_data)
+DECLARE_VVAR((PAGE_SIZE) * 0 + 128, struct vdso_data, _vdso_data)
+DECLARE_SBVAR((PAGE_SIZE) * 1 + 128, struct sbpf_data, _sbpf_data)
 
 #undef DECLARE_VVAR
+#undef DECLARE_SBVAR
 
 #endif

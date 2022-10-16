@@ -23,6 +23,8 @@
 #define __vdso_data (VVAR(_vdso_data))
 #define __timens_vdso_data (TIMENS(_vdso_data))
 
+#define __sbpf_data	(SBVAR(_sbpf_data))
+
 #define VDSO_HAS_TIME 1
 
 #define VDSO_HAS_CLOCK_GETRES 1
@@ -271,6 +273,11 @@ static inline u64 __arch_get_hw_counter(s32 clock_mode,
 static __always_inline const struct vdso_data *__arch_get_vdso_data(void)
 {
 	return __vdso_data;
+}
+
+static __always_inline const struct sbpf_data *__arch_get_sbpf_data(void)
+{
+	return __sbpf_data;
 }
 
 static inline bool arch_vdso_clocksource_ok(const struct vdso_data *vd)

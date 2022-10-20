@@ -55,7 +55,7 @@ extern char __vvar_page;
 
 #define DEFINE_SBVAR(type, name)					\
 	type name[CS_RAW]						\
-	__attribute__((section(".sbvar_" #name), align(16))) __visible
+	__attribute__((section(".sbvar_" #name), aligned(16))) __visible
 
 #endif
 

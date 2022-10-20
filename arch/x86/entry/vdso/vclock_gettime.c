@@ -22,6 +22,18 @@ int __vdso_gettimeofday(struct __kernel_old_timeval *tv, struct timezone *tz)
 	return __cvdso_gettimeofday(tv, tz);
 }
 
+extern unsigned long __sbpf_get_current_tgid_pid(void);
+
+unsigned long __sbpf_get_current_tgid_pid(void)
+{
+	struct sbpf_data* sbd = __arch_get_sbpf_data();
+	return sbd->current_tgid_pid;
+}
+
+unsigned long sbpf_get_current_tgid_pid(void)
+	__attribute__((weak, alias("__sbpf_get_current_tgid_pid")));
+
+extern unsigned long __testvdso(void);
 int gettimeofday(struct __kernel_old_timeval *, struct timezone *)
 	__attribute__((weak, alias("__vdso_gettimeofday")));
 

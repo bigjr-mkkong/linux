@@ -168,3 +168,11 @@ void vdso_update_end(unsigned long flags)
 	__arch_sync_vdso_data(vdata);
 	raw_spin_unlock_irqrestore(&timekeeper_lock, flags);
 }
+
+
+void update_sbpf_data(unsigned long testvar){
+	struct sbpf_data *sbd = __arch_get_k_sbpf_data();
+	sbpf_write_begin(sbd);
+	sbd->current_tgid_pid = testvar;
+	sbpf_write_end(sbd);
+}

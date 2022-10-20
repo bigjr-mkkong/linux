@@ -211,6 +211,9 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 		}
 
 		return vmf_insert_pfn(vma, vmf->address, pfn);
+	} else if(sym_offset == image->sym_vvar_page + (long)(vmf->pgoff << PAGE_SHIFT)) {
+		pfn = __pa_symbol(&__vvar_page + (1 << PAGE_SHIFT) ) >> PAGE_SHIFT;
+		return vmf_insert_pfn(vma, vmf->address, pfn);
 	} else if (sym_offset == image->sym_pvclock_page) {
 		struct pvclock_vsyscall_time_info *pvti =
 			pvclock_get_pvti_cpu0_va();

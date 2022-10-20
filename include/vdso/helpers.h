@@ -51,6 +51,16 @@ static __always_inline void vdso_write_end(struct vdso_data *vd)
 	WRITE_ONCE(vd[CS_RAW].seq, vd[CS_RAW].seq + 1);
 }
 
+static __always_inline void sbpf_write_begin(struct sbpf_data *sbd){
+	WRITE_ONCE(sbd->sbpf_seq, sbd->sbpf_seq + 1);
+	smp_wmb();
+}
+
+static __always_inline void sbpf_write_end(struct sbpf_data *sbd){
+	smp_wmb();
+	WRITE_ONCE(sbd->sbpf_seq, sbd->sbpf_seq + 1);
+}
+
 #endif /* !__ASSEMBLY__ */
 
 #endif /* __VDSO_HELPERS_H */

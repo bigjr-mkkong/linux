@@ -36,6 +36,7 @@ SECTIONS
 #define EMIT_SBVAR(name, offset) 
 #include <asm/vvar.h>
 #undef EMIT_VVAR
+#undef EMIT_SBVAR
 
 	. = SIZEOF_HEADERS;
 

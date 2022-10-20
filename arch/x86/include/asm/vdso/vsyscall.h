@@ -21,6 +21,13 @@ struct vdso_data *__x86_get_k_vdso_data(void)
 }
 #define __arch_get_k_vdso_data __x86_get_k_vdso_data
 
+DEFINE_SBVAR(struct sbpf_data, _sbpf_data);
+static __always_inline
+struct sbpf_data *__x86_get_k_sbpf_data(void)
+{
+	return _sbpf_data;
+}
+#define __arch_get_k_sbpf_data __x86_get_k_sbpf_data
 /* The asm-generic header needs to be included after the definitions above */
 #include <asm-generic/vdso/vsyscall.h>
 

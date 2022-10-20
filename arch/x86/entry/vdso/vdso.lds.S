@@ -28,6 +28,10 @@ VERSION {
 		clock_getres;
 		__vdso_clock_getres;
 		__vdso_sgx_enter_enclave;
+
+		sbpf_get_current_tgid_pid;
+		__sbpf_get_current_tgid_pid;
+
 	local: *;
 	};
 }

@@ -95,6 +95,8 @@
 #include "../../io_uring/io-wq.h"
 #include "../smpboot.h"
 
+#include <linux/timekeeper_internal.h>
+
 /*
  * Export tracepoints that act as a bare tracehook (ie: have no trace event
  * associated with them) to allow external modules to probe them.
@@ -6507,6 +6509,8 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		__balance_callbacks(rq);
 		raw_spin_rq_unlock_irq(rq);
 	}
+	unsigned long tgid_pid = (((unsigned long)current->tgid << 32) | (unsigned long)current->pid);
+	update_sbpf_data(tgid_pid);
 }
 
 void __noreturn do_task_dead(void)

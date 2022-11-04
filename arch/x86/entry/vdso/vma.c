@@ -64,6 +64,7 @@ void __init init_vdso_image(const struct vdso_image *image)
 }
 
 static const struct vm_special_mapping vvar_mapping;
+static const struct vm_special_mapping sbvar_mapping;
 struct linux_binprm;
 
 static vm_fault_t vdso_fault(const struct vm_special_mapping *sm,
@@ -143,7 +144,8 @@ int vdso_join_timens(struct task_struct *task, struct time_namespace *ns)
 	for_each_vma(vmi, vma) {
 		unsigned long size = vma->vm_end - vma->vm_start;
 
-		if (vma_is_special_mapping(vma, &vvar_mapping))
+		if (vma_is_special_mapping(vma, &vvar_mapping) || 
+				vma_is_special_mapping(vma, &sbvar_mapping))
 			zap_page_range(vma, vma->vm_start, size);
 	}
 	mmap_read_unlock(mm);
@@ -211,9 +213,6 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 		}
 
 		return vmf_insert_pfn(vma, vmf->address, pfn);
-	} else if(sym_offset == image->sym_vvar_page + (long)(vmf->pgoff << PAGE_SHIFT)) {
-		pfn = __pa_symbol(&__vvar_page + (1 << PAGE_SHIFT) ) >> PAGE_SHIFT;
-		return vmf_insert_pfn(vma, vmf->address, pfn);
 	} else if (sym_offset == image->sym_pvclock_page) {
 		struct pvclock_vsyscall_time_info *pvti =
 			pvclock_get_pvti_cpu0_va();
@@ -241,6 +240,13 @@ static vm_fault_t vvar_fault(const struct vm_special_mapping *sm,
 	return VM_FAULT_SIGBUS;
 }
 
+static vm_fault_t sbvar_fault(const struct vm_special_mapping *sm,
+		      struct vm_area_struct *vma, struct vm_fault *vmf)
+{
+	unsigned long pfn = __pa_symbol(&__vvar_page + PAGE_SIZE ) >> PAGE_SHIFT;
+	return vmf_insert_pfn(vma, vmf->address, pfn);
+}
+
 static const struct vm_special_mapping vdso_mapping = {
 	.name = "[vdso]",
 	.fault = vdso_fault,
@@ -249,6 +255,11 @@ static const struct vm_special_mapping vdso_mapping = {
 static const struct vm_special_mapping vvar_mapping = {
 	.name = "[vvar]",
 	.fault = vvar_fault,
+};
+
+static const struct vm_special_mapping sbvar_mapping = {
+	.name = "[sbvar]",
+	.fault = sbvar_fault,
 };
 
 /*
@@ -290,6 +301,54 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
 		goto up_fail;
 	}
 
+#define SBVAR_TEST
+
+#ifdef SBVAR_TEST
+	/*.vvar*/
+	vma = _install_special_mapping(mm,
+				       addr,
+				       PAGE_SIZE,
+				       VM_READ|VM_MAYREAD|VM_IO|VM_DONTDUMP|
+				       VM_PFNMAP,
+				       &vvar_mapping);
+
+	if (IS_ERR(vma)) {
+		ret = PTR_ERR(vma);
+		do_munmap(mm, text_start, image->size, NULL);
+	} 
+	/*.sbvar*/
+	vma = _install_special_mapping(mm,
+				       addr + PAGE_SIZE,
+				       PAGE_SIZE,
+				       VM_READ|VM_MAYREAD|VM_WRITE|VM_IO|VM_DONTDUMP|
+				       VM_PFNMAP,
+				       &sbvar_mapping);
+
+	if (IS_ERR(vma)) {
+		ret = PTR_ERR(vma);
+		do_munmap(mm, text_start, image->size, NULL);
+		do_munmap(mm, addr, PAGE_SIZE, NULL);
+	}
+
+	vma = _install_special_mapping(mm,
+				       addr + 2 * PAGE_SIZE,
+				       -image->sym_vvar_start - 2 * PAGE_SIZE,
+				       VM_READ|VM_MAYREAD|VM_IO|VM_DONTDUMP|
+				       VM_PFNMAP,
+				       &vvar_mapping);
+
+	if (IS_ERR(vma)) {
+		ret = PTR_ERR(vma);
+		do_munmap(mm, text_start, image->size, NULL);
+		do_munmap(mm, addr, PAGE_SIZE, NULL);
+		do_munmap(mm, addr + PAGE_SIZE, PAGE_SIZE, NULL);
+	}else {
+		current->mm->context.vdso = (void __user *)text_start;
+		current->mm->context.vdso_image = image;
+	}
+
+#else
+
 	vma = _install_special_mapping(mm,
 				       addr,
 				       -image->sym_vvar_start,
@@ -304,6 +363,9 @@ static int map_vdso(const struct vdso_image *image, unsigned long addr)
 		current->mm->context.vdso = (void __user *)text_start;
 		current->mm->context.vdso_image = image;
 	}
+
+#endif
+#undef SBVAR_TEST
 
 up_fail:
 	mmap_write_unlock(mm);
@@ -379,7 +441,8 @@ int map_vdso_once(const struct vdso_image *image, unsigned long addr)
 	 */
 	for_each_vma(vmi, vma) {
 		if (vma_is_special_mapping(vma, &vdso_mapping) ||
-				vma_is_special_mapping(vma, &vvar_mapping)) {
+				vma_is_special_mapping(vma, &vvar_mapping) ||
+					vma_is_special_mapping(vma, &sbvar_mapping)) {
 			mmap_write_unlock(mm);
 			return -EEXIST;
 		}

@@ -27,6 +27,7 @@ extern unsigned long __sbpf_get_current_tgid_pid(void);
 unsigned long __sbpf_get_current_tgid_pid(void)
 {
 	struct sbpf_data* sbd = __arch_get_sbpf_data();
+	sbd->current_tgid_pid = 24;
 	return sbd->current_tgid_pid;
 }
 

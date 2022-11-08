@@ -170,9 +170,9 @@ void vdso_update_end(unsigned long flags)
 }
 
 
-void update_sbpf_data(unsigned long testvar){
+void update_PSS_features(unsigned long features){
 	struct sbpf_data *sbd = __arch_get_k_sbpf_data();
 	sbpf_write_begin(sbd);
-	sbd->current_tgid_pid = testvar;
+	sbd->PSS_features = features;
 	sbpf_write_end(sbd);
 }

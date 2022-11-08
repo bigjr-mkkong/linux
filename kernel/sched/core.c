@@ -6510,9 +6510,9 @@ static void __sched notrace __schedule(unsigned int sched_mode)
 		raw_spin_rq_unlock_irq(rq);
 	}
 	//unsigned long tgid_pid = (((unsigned long)current->tgid << 32) | (unsigned long)current->pid);
-	unsigned long tgid_pid;
-	tgid_pid = 14325;
-	update_sbpf_data(tgid_pid);
+	/*unsigned long tgid_pid;
+	tgid_pid = 0;
+	update_PSS_features(tgid_pid);*/
 }
 
 void __noreturn do_task_dead(void)

@@ -22,17 +22,36 @@ int __vdso_gettimeofday(struct __kernel_old_timeval *tv, struct timezone *tz)
 	return __cvdso_gettimeofday(tv, tz);
 }
 
-extern unsigned long __sbpf_get_current_tgid_pid(void);
+extern long __sbpf_get_PSS_features(void);
+extern long __sbpf_set_PSS_features(u64 PSS_features);
 
-unsigned long __sbpf_get_current_tgid_pid(void)
+long __sbpf_get_PSS_features(void)
 {
 	struct sbpf_data* sbd = __arch_get_sbpf_data();
-	sbd->current_tgid_pid = 24;
-	return sbd->current_tgid_pid;
+	long PSS_features = (long)sbd->PSS_features;
+
+	if(PSS_features > 0xf || PSS_features < 0) return -1;
+		
+	return PSS_features;
 }
 
-unsigned long sbpf_get_current_tgid_pid(void)
-	__attribute__((weak, alias("__sbpf_get_current_tgid_pid")));
+long sbpf_get_PSS_features(void)
+	__attribute__((weak, alias("__sbpf_get_PSS_features")));
+
+
+long __sbpf_set_PSS_features(u64 PSS_features)
+{
+	if(PSS_features > 0xf || PSS_features < 0) return -1;
+
+	struct sbpf_data* sbd = __arch_get_sbpf_data();
+	sbd->PSS_features = (u64)PSS_features;
+	
+	return PSS_features;
+}
+
+long sbpf_set_PSS_features(u64 PSS_features)
+	__attribute__((weak, alias("__sbpf_set_PSS_features")));
+
 
 extern unsigned long __testvdso(void);
 int gettimeofday(struct __kernel_old_timeval *, struct timezone *)

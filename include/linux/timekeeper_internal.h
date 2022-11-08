@@ -143,7 +143,7 @@ struct timekeeper {
 extern void update_vsyscall(struct timekeeper *tk);
 extern void update_vsyscall_tz(void);
 
-extern void update_sbpf_data(unsigned long testvar);
+extern void update_sbpvar_data(unsigned long testvar);
 
 #else
 
@@ -153,7 +153,7 @@ static inline void update_vsyscall(struct timekeeper *tk)
 static inline void update_vsyscall_tz(void)
 {
 }
-static inline void update_sbpf_data(unsigned long testvar)
+static inline void update_PSS_features(unsigned long features)
 {
 }
 #endif

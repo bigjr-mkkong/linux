@@ -111,10 +111,7 @@ struct vdso_data {
 
 struct sbpf_data{
 	u64 sbpf_seq;
-	u64 verified_tgid_pid;
-
-	u64 current_tgid_pid;
-	u64 current_smp_cpuid;
+	u64 PSS_features;
 };
 
 /*

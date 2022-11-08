@@ -29,8 +29,11 @@ VERSION {
 		__vdso_clock_getres;
 		__vdso_sgx_enter_enclave;
 
-		sbpf_get_current_tgid_pid;
-		__sbpf_get_current_tgid_pid;
+		sbpf_get_PSS_features;
+		__sbpf_get_PSS_features;
+
+		sbpf_set_PSS_features;
+		__sbpf_set_PSS_features;
 
 	local: *;
 	};

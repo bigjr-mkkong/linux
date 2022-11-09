@@ -417,3 +417,8 @@
 547	x32	pwritev2		compat_sys_pwritev64v2
 # This is the end of the legacy x32 range.  Numbers 548 and above are
 # not special and are not to be used for x32-specific syscalls.
+548	common	query			sys_query
+549 common  update          sys_update
+550 common  vdso_query      sys_vdso_query
+551 common  vdso_update     sys_vdso_update
+552 common  vdso_clear      sys_vdso_clear

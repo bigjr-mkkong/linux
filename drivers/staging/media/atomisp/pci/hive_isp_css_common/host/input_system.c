@@ -1647,7 +1647,7 @@ static input_system_err_t input_system_configure_channel_sensor(
 		return INPUT_SYSTEM_ERR_PARAMETER_NOT_SUPPORTED;
 	}
 
-	return INPUT_SYSTEM_ERR_NO_ERROR;
+	return INPUT_SYSTEM_ERR_PARAMETER_NOT_SUPPORTED;
 }
 
 // Test flags and set structure.

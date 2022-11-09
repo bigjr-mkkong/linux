@@ -65,6 +65,53 @@ __kernel_old_time_t __vdso_time(__kernel_old_time_t *t)
 __kernel_old_time_t time(__kernel_old_time_t *t)	__attribute__((weak, alias("__vdso_time")));
 
 
+// Perceptron paramaters
+#define PERC_ENTRIES 64   //Upto 12-bit addressing in hashed perceptron
+#define PERC_FEATURES 4
+#define PERC_COUNTER_MAX 15 //-16 to +15: 5 bits counter
+#define PERC_THRESHOLD_HI -5
+#define PERC_THRESHOLD_LO -15
+#define POS_UPDT_THRESHOLD 90
+#define NEG_UPDT_THRESHOLD -80
+
+void get_perc_index(int *input, int len, int perc_set[PERC_FEATURES])
+{
+    unsigned pre_hash[PERC_FEATURES];
+	int i;
+    for (i = 0; i < len; i++)
+    {
+        pre_hash[i] = input[i];
+    }
+
+    for (i = 0; i < len; i++)
+    {
+        // perc_set[i] = (pre_hash[i]) % perc.PERC_DEPTH[i]; // Variable depths
+        perc_set[i] = (pre_hash[i]) % 32; // Variable depths
+    }
+}
+// extern struct vdso_data _vdso_data[CS_BASES] __attribute__((visibility("hidden")));
+notrace int __vdso_query(int* input, int len)
+{
+	// unsigned *ptr = (unsigned *)(&_vdso_data) + 0xBC;
+	// return *ptr;
+
+    int perc_set[PERC_FEATURES];
+    // Get the indexes in perc_set[]
+    get_perc_index(input, len, perc_set);
+
+    int sum = 0;
+	int i;
+    for (i = 0; i < len; i++)
+    {
+        sum += __arch_get_vdso_data()->perc[perc_set[i]][i];
+        // Calculate Sum
+    }
+    // Return the sum
+    return sum;
+
+	// return __arch_get_vdso_data()->weight[x];
+}
+
 #if defined(CONFIG_X86_64) && !defined(BUILD_VDSO32_64)
 /* both 64-bit and x32 use these */
 extern int __vdso_clock_gettime(clockid_t clock, struct __kernel_timespec *ts);

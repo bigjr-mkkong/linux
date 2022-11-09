@@ -272,6 +272,138 @@ out:
 	return error;
 }
 
+// Perceptron paramaters
+#define PERC_ENTRIES 64   //Upto 12-bit addressing in hashed perceptron
+#define PERC_FEATURES 4
+#define PERC_COUNTER_MAX 15 //-16 to +15: 5 bits counter
+#define PERC_THRESHOLD_HI -5
+#define PERC_THRESHOLD_LO -15
+#define POS_UPDT_THRESHOLD 90
+#define NEG_UPDT_THRESHOLD -80
+
+void get_perc_index(int *input, int len, int perc_set[PERC_FEATURES])
+{
+    unsigned pre_hash[PERC_FEATURES];
+	int i;
+    for (i = 0; i < len; i++)
+    {
+        pre_hash[i] = input[i];
+    }
+
+    for (i = 0; i < len; i++)
+    {
+        // perc_set[i] = (pre_hash[i]) % perc.PERC_DEPTH[i]; // Variable depths
+        perc_set[i] = (pre_hash[i]) % 32; // Variable depths
+    }
+}
+
+#include <vdso/datapage.h>
+// #include <asm/vvar.h>
+// #include <asm/vdso/vsyscall.h>
+extern struct vdso_data _vdso_data[CS_BASES] __attribute__((visibility("hidden")));
+int number = 0;
+SYSCALL_DEFINE3(query, int, in1, int, in2, int, len) {
+
+    int perc_set[PERC_FEATURES];
+	int input[2] = {in1, in2};
+    // Get the indexes in perc_set[]
+    get_perc_index(input, len, perc_set);
+
+    int sum = 0;
+	int i;
+    for (i = 0; i < len; i++)
+    {
+        // sum += *(&_vdso_data[0].__unused);
+		sum += *(&_vdso_data[0].perc[perc_set[i]][i]);
+        // Calculate Sum
+    }
+    // Return the sum
+    return sum;
+	// return *(&_vdso_data[0].weight[idx]);
+}
+
+SYSCALL_DEFINE5(update, int, in1, int, in2, int, len, int, direction, int, perc_sum) {
+	// *(&_vdso_data[0].weight[idx]) = num;
+	int perc_set[PERC_FEATURES];
+	int input[2] = {in1, in2};
+    // Get the perceptron indexes
+    get_perc_index(input, len, perc_set);
+
+    int sum = 0;
+    // Restore the sum that led to the prediction
+    sum = perc_sum;
+	int i;
+    if (!direction)
+    { // direction = 1 means the sum was in the correct direction,
+      // 0 means it was in the wrong direction
+        // Prediction wrong
+        for (i = 0; i < len; i++)
+        {
+            if (sum >= PERC_THRESHOLD_HI)
+            {
+                // Prediction was to prefectch --
+                // so decrement counters
+                if (*(&_vdso_data[0].perc[perc_set[i]][i]) >
+                    -1 * (PERC_COUNTER_MAX + 1))
+                    *(&_vdso_data[0].perc[perc_set[i]][i]) -= 1;
+            }
+            if (sum < PERC_THRESHOLD_HI)
+            {
+                // Prediction was to not prefetch -- so increment counters
+                if (*(&_vdso_data[0].perc[perc_set[i]][i]) < PERC_COUNTER_MAX)
+                    *(&_vdso_data[0].perc[perc_set[i]][i]) += 1;
+            }
+        }
+    }
+    if (direction && sum > NEG_UPDT_THRESHOLD && sum < POS_UPDT_THRESHOLD)
+    {
+        // Prediction correct but sum not 'saturated' enough
+        for (i = 0; i < len; i++)
+        {
+            if (sum >= PERC_THRESHOLD_HI)
+            {
+                // Prediction was to prefetch -- so increment counters
+                if (*(&_vdso_data[0].perc[perc_set[i]][i]) < PERC_COUNTER_MAX)
+                    *(&_vdso_data[0].perc[perc_set[i]][i]) += 1;
+            }
+            if (sum < PERC_THRESHOLD_HI)
+            {
+                // Prediction was to not prefetch --
+                // so decrement counters
+                if (*(&_vdso_data[0].perc[perc_set[i]][i])
+                    > -1 * (PERC_COUNTER_MAX + 1))
+                    *(&_vdso_data[0].perc[perc_set[i]][i]) -= 1;
+            }
+        }
+    }
+	return 0;
+}
+// #include <sys/auxv.h>
+SYSCALL_DEFINE1(vdso_query, int, idx) {
+	// unsigned *ptr = (unsigned *)(&_vdso_data) + 0xBC;
+	return *(&_vdso_data[0].__unused);
+}
+
+SYSCALL_DEFINE2(vdso_update, int, num, int, idx) {
+	// unsigned *ptr = (unsigned *) (&_vdso_data) + 0xBC;
+	// *ptr = num;
+	*(&_vdso_data[0].__unused) = num;
+
+	return 0;
+}
+#define PERC_ENTRIES 64
+#define PERC_FEATURES 4
+SYSCALL_DEFINE0(vdso_clear) {
+	int i, j;
+	for (i = 0; i < PERC_ENTRIES; i++) {
+		for (j = 0; j < PERC_FEATURES; j++) {
+			_vdso_data[0].perc[i][j] = 0;
+		}
+	}
+	return 0;
+}
+
+
 /*
  * Ugh. To avoid negative return values, "getpriority()" will
  * not return the normal nice-value, but a negated value that

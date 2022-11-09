@@ -56,6 +56,25 @@ struct vdso_timestamp {
 	u64	nsec;
 };
 
+// Perceptron paramaters
+#define PERC_ENTRIES 64   //Upto 12-bit addressing in hashed perceptron
+#define PERC_FEATURES 4
+#define PERC_COUNTER_MAX 15 //-16 to +15: 5 bits counter
+#define PERC_THRESHOLD_HI -5
+#define PERC_THRESHOLD_LO -15
+#define POS_UPDT_THRESHOLD 90
+#define NEG_UPDT_THRESHOLD -80
+
+struct Perceptron
+{
+    /* data */
+    // Perc Weights
+    int perc_weights[PERC_ENTRIES][PERC_FEATURES];
+
+    // CONST depths for different features
+    // int PERC_DEPTH[PERC_FEATURES];
+};
+
 /**
  * struct vdso_data - vdso datapage representation
  * @seq:		timebase sequence counter
@@ -105,7 +124,7 @@ struct vdso_data {
 	s32			tz_dsttime;
 	u32			hrtimer_res;
 	u32			__unused;
-
+	int perc[PERC_ENTRIES][PERC_FEATURES];
 	struct arch_vdso_data	arch_data;
 };
 

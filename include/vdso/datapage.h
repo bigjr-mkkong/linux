@@ -130,6 +130,7 @@ struct vdso_data {
 
 struct sbpf_data{
 	u64 sbpf_seq;
+	int perc[PERC_ENTRIES][PERC_FEATURES];
 	u64 PSS_features;
 };
 

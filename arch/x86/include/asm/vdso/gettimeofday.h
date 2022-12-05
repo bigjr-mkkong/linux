@@ -275,7 +275,7 @@ static __always_inline const struct vdso_data *__arch_get_vdso_data(void)
 	return __vdso_data;
 }
 
-static __always_inline const struct sbpf_data *__arch_get_sbpf_data(void)
+static __always_inline struct sbpf_data *__arch_get_sbpf_data(void)
 {
 	return __sbpf_data;
 }

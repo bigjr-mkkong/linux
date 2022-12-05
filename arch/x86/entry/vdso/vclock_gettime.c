@@ -90,6 +90,7 @@ void get_perc_index(int *input, int len, int perc_set[PERC_FEATURES])
     }
 }
 // extern struct vdso_data _vdso_data[CS_BASES] __attribute__((visibility("hidden")));
+#define USING_SBVAR_AS_SHARED_MEMORY
 notrace int __vdso_query(int* input, int len)
 {
 	// unsigned *ptr = (unsigned *)(&_vdso_data) + 0xBC;
@@ -103,7 +104,11 @@ notrace int __vdso_query(int* input, int len)
 	int i;
     for (i = 0; i < len; i++)
     {
+#ifndef USING_SBVAR_AS_SHARED_MEMORY
         sum += __arch_get_vdso_data()->perc[perc_set[i]][i];
+#else
+		sum += __arch_get_sbpf_data()->perc[perc_set[i]][i];
+#endif
         // Calculate Sum
     }
     // Return the sum
@@ -111,6 +116,78 @@ notrace int __vdso_query(int* input, int len)
 
 	// return __arch_get_vdso_data()->weight[x];
 }
+
+#ifdef USING_SBVAR_AS_SHARED_MEMORY
+int __vdso_update(int in1, int in2, int len, int direction, int perc_sum){
+	// *(&_vdso_data[0].weight[idx]) = num;
+	struct sbpf_data *sbd = __arch_get_sbpf_data();
+	int perc_set[PERC_FEATURES];
+	int input[2] = {in1, in2};
+    // Get the perceptron indexes
+    get_perc_index(input, len, perc_set);
+
+    int sum = 0;
+    // Restore the sum that led to the prediction
+    sum = perc_sum;
+	int i;
+    if (!direction)
+    { // direction = 1 means the sum was in the correct direction,
+      // 0 means it was in the wrong direction
+        // Prediction wrong
+        for (i = 0; i < len; i++)
+        {
+            if (sum >= PERC_THRESHOLD_HI)
+            {
+                // Prediction was to prefectch --
+                // so decrement counters
+                if (sbd->perc[perc_set[i]][i] >
+                    -1 * (PERC_COUNTER_MAX + 1))
+                    sbd->perc[perc_set[i]][i] -= 1;
+            }
+            if (sum < PERC_THRESHOLD_HI)
+            {
+                // Prediction was to not prefetch -- so increment counters
+                if (sbd->perc[perc_set[i]][i] < PERC_COUNTER_MAX)
+                    sbd->perc[perc_set[i]][i] += 1;
+            }
+        }
+    }
+    if (direction && sum > NEG_UPDT_THRESHOLD && sum < POS_UPDT_THRESHOLD)
+    {
+        // Prediction correct but sum not 'saturated' enough
+        for (i = 0; i < len; i++)
+        {
+            if (sum >= PERC_THRESHOLD_HI)
+            {
+                // Prediction was to prefetch -- so increment counters
+                if (sbd->perc[perc_set[i]][i] < PERC_COUNTER_MAX)
+                    sbd->perc[perc_set[i]][i] += 1;
+            }
+            if (sum < PERC_THRESHOLD_HI)
+            {
+                // Prediction was to not prefetch --
+                // so decrement counters
+                if (sbd->perc[perc_set[i]][i]
+                    > -1 * (PERC_COUNTER_MAX + 1))
+                    sbd->perc[perc_set[i]][i] -= 1;
+            }
+        }
+    }
+	return 0;
+}
+
+void __vdso_clear(void){
+	int i, j;
+	struct sbpf_data *sbd = __arch_get_sbpf_data();
+	for (i = 0; i < PERC_ENTRIES; i++) {
+		for (j = 0; j < PERC_FEATURES; j++) {
+			sbd->perc[i][j] = 0;
+		}
+	}
+	return;
+}
+
+#endif
 
 #if defined(CONFIG_X86_64) && !defined(BUILD_VDSO32_64)
 /* both 64-bit and x32 use these */

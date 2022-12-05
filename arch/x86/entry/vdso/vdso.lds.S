@@ -28,7 +28,10 @@ VERSION {
 		clock_getres;
 		__vdso_clock_getres;
 		__vdso_sgx_enter_enclave;
+
 		__vdso_query;
+		__vdso_update;
+		__vdso_clear;
 
 		sbpf_get_PSS_features;
 		__sbpf_get_PSS_features;

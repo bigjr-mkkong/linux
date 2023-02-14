@@ -302,7 +302,7 @@ void get_perc_index(int *input, int len, int perc_set[PERC_FEATURES])
 // #include <asm/vdso/vsyscall.h>
 extern struct vdso_data _vdso_data[CS_BASES] __attribute__((visibility("hidden")));
 int number = 0;
-SYSCALL_DEFINE3(query, int, in1, int, in2, int, len) {
+SYSCALL_DEFINE4(query, int, in1, int, in2, int, len, int*, result) {
 
     int perc_set[PERC_FEATURES];
 	int input[2] = {in1, in2};
@@ -318,7 +318,8 @@ SYSCALL_DEFINE3(query, int, in1, int, in2, int, len) {
         // Calculate Sum
     }
     // Return the sum
-    return sum;
+	copy_to_user(result, &sum, sizeof(int));
+    return 0;
 	// return *(&_vdso_data[0].weight[idx]);
 }
 

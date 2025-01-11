@@ -33,6 +33,7 @@
 #include "poll.h"
 #include "cancel.h"
 #include "rw.h"
+#include "pengops.h"
 
 static int io_no_issue(struct io_kiocb *req, unsigned int issue_flags)
 {
@@ -531,6 +532,12 @@ const struct io_op_def io_op_defs[] = {
 		.prep			= io_eopnotsupp_prep,
 #endif
 	},
+    [IORING_OP_PENGPUSH] = {
+		.audit_skip		= 1,
+        .prep           = io_prep_pengpush,
+        .issue          = io_pengpush
+
+    },
 };
 
 const char *io_uring_get_opcode(u8 opcode)

@@ -1,0 +1,2 @@
+#! /bin/sh
+make ARCH=x86_64 menuconfig

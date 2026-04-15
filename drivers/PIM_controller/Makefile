@@ -1,9 +1,13 @@
 obj-m += PIM_controller.o
 
-KDIR ?= /lib/modules/$(shell uname -r)/build
+ARCH ?= riscv
+
+CROSS_COMPILE ?= riscv64-linux-gnu-
+
+KDIR ?= ../../
 
 all:
-	make -C $(KDIR) M=$(PWD) modules
+	make -C $(KDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) modules
 
 clean:
-	make -C $(KDIR) M=$(PWD) clean
+	make -C $(KDIR) M=$(PWD) ARCH=$(ARCH) CROSS_COMPILE=$(CROSS_COMPILE) clean

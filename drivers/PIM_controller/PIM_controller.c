@@ -45,7 +45,7 @@ static void wthread_func(struct work_struct *work) {
         return;
     }
 
-    if(kfifo_out_locked(&req_fifo, &cmd, 1, &req_fifo_lock) != 1) {
+    if(kfifo_out_locked(&req_fifo, &cmd, sizeof(struct fifo_elem_t), &req_fifo_lock) != sizeof(struct fifo_elem_t)) {
         pr_warn("[PIM wthread] kfifo failed to provide command\n");
         return;
     }
@@ -136,7 +136,7 @@ static int __init pim_controller_init(void)
 {
     int ret;
 
-    ret = kfifo_alloc(&req_fifo, FIFO_MAX_ELEMENTS * sizeof(int), GFP_KERNEL);
+    ret = kfifo_alloc(&req_fifo, FIFO_MAX_ELEMENTS * sizeof(struct fifo_elem_t), GFP_KERNEL);
     if (ret) return ret;
 
     INIT_WORK(&wthread, wthread_func);

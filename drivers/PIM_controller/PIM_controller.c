@@ -1,7 +1,8 @@
 #include "asm-generic/errno-base.h"
+#include "linux/mm.h"
+#include "linux/vmalloc.h"
 #include "linux/jiffies.h"
 #include "linux/printk.h"
-#include "linux/spinlock.h"
 #include "linux/spinlock_types.h"
 #include <linux/module.h>
 #include <linux/init.h>
@@ -16,6 +17,7 @@
 
 #define DRV_NAME "PIM_controller"
 #define FIFO_MAX_ELEMENTS 1024
+#define PIM_MAX_MEM     (64 * PAGE_SIZE)
 
 /*
  * How to use it:
@@ -35,6 +37,8 @@ static DEFINE_SPINLOCK(req_fifo_lock);
 static struct workqueue_struct *wthread_wq;
 static struct work_struct wthread;
 
+static void *pim_mempool;
+static size_t pim_mem_usage;
 
 static void wthread_func(struct work_struct *work) {
     struct fifo_elem_t cmd;
@@ -121,9 +125,43 @@ static long pim_controller_ioctl(struct file *file, unsigned int cmd_type,\
     return 0;
 }
 
+
+/*
+ * This is a simplified pim memory mmap backend
+ * It will allocate non-cachable memory for user program
+ * It guarantee user space vma is continuous, however, it does not guarantee paddr in kernel is continuous
+ * PIM_MAX_MEM is the maximum of PIM mempool. I set it to 64 Pages
+ * Another way to implement physical continuous memory is to use DMA functions, which I don't want to use
+ * Overall, our purpose is to grab the traces, so there's no need for details
+ */
+static int pim_mmap(struct file *filp, struct vm_area_struct *vma) {
+    unsigned long size = vma->vm_end - vma->vm_start;
+
+    if (size + pim_mem_usage > PIM_MAX_MEM)
+        return -EINVAL;
+
+    vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+    unsigned long pfn;
+    void *vaddr = pim_mempool;
+    while (size > 0) {
+        pfn = vmalloc_to_pfn(vaddr);
+        if (remap_pfn_range(vma, vma->vm_start, pfn, PAGE_SIZE, vma->vm_page_prot)) {
+            return -EAGAIN;
+        }
+        vma->vm_start += PAGE_SIZE;
+        vaddr += PAGE_SIZE;
+        size -= PAGE_SIZE;
+        pim_mem_usage += PAGE_SIZE;
+    }
+
+    return 0;
+}
+
 static const struct file_operations my_fops = {
     .owner = THIS_MODULE,
     .unlocked_ioctl = pim_controller_ioctl,
+    .mmap = pim_mmap
 };
 
 static struct miscdevice pim_cntr = {
@@ -154,6 +192,13 @@ static int __init pim_controller_init(void)
         return ret;
     }
 
+    pim_mempool = vmalloc_user(PIM_MAX_MEM);
+    if (!pim_mempool) {
+        kfifo_free(&req_fifo);
+        return -ENOMEM;
+    }
+
+    pim_mem_usage = 0;
     pr_info(DRV_NAME ": Module loaded. /dev/%s created.\n", DRV_NAME);
     return 0;
 }

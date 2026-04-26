@@ -11,8 +11,12 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+
+#include <sys/time.h>
+
 
 #define DEVICE_PATH  "/dev/PIM_controller"
 #define IOCTL_MAGIC  114514
@@ -23,88 +27,110 @@ struct pim_req_t {
     char req_list[MAX_PIM_UNIT];
 };
 
-/* -------------------------------------------------------------------------
- * Internal structs
- * ---------------------------------------------------------------------- */
+// Internal structs
 
-/*
- * Returned to the user after pim_submit().
- * The completer thread sets `done` to 1 when the kernel acks the batch
- * this request belongs to.
- */
 struct pim_req_handle {
-    atomic_int            done;
-    struct pim_req_handle *next; /* intrusive list: links all handles in a batch */
+    atomic_int            done; /* set to 1 by completer_loop when kernel signals completion */
+    struct pim_req_handle *next; /* links handles within the same batch */
 };
 
-/*
- * One in-flight kernel submission: one ioctl → one eventfd → N req handles.
- * epoll watches the eventfd; data.ptr points to the batch_tracker so the
- * completer thread can find it without a hashtable lookup.
- */
 struct batch_tracker {
-    int                   efd;
-    struct pim_req_handle *req_head; /* list of all handles waiting on this batch */
-    struct batch_tracker  *next;     /* next tracker in lib.inflight list */
+    int                   efd;      /* eventfd the kernel writes to on completion */
+    struct pim_req_handle *req_head; /* first handle in the batch, used to mark all done */
+    struct batch_tracker  *next;     /* next in lib.inflight linked list */
 };
 
-/*
- * Requests accumulate here until the watermark or flush timeout triggers
- * an actual ioctl(). Multiple users' cmd_lists are OR-merged (safe because
- * ownership enforcement guarantees disjoint cores).
- */
 struct pending_batch {
-    char                  cmd_list[MAX_PIM_UNIT];
-    int                   count;
-    struct pim_req_handle *head;
-    struct pim_req_handle *tail;
-    struct timespec        first_submit_ts;
+    char                  cmd_list[MAX_PIM_UNIT]; /* one command slot per core, PIM_NOP if unused */
+    int                   count;                  /* number of submissions accumulated so far */
+    struct pim_req_handle *head;                  /* first handle in this batch */
+    struct pim_req_handle *tail;                  /* last handle, for O(1) append */
+    struct timeval         first_submit_ts;        /* timestamp of first submission, for timeout flush */
 };
 
+
+ 
 struct pim_user {
     int  user_id;
     bool owns_core[MAX_PIM_UNIT];
+
+    int   core2chunk[MAX_PIM_UNIT];     /* -1 when core not owned */
+    bool  core_mode[MAX_PIM_UNIT];  /* false = HOST_OWNED */ // need to verify
 };
 
-/* -------------------------------------------------------------------------
- * Global library state (singleton)
- * ---------------------------------------------------------------------- */
+ // Global library state (singleton)
 
 static struct {
-    int dev_fd;
-    int epoll_fd;
-    int watermark; // how many requests before auto flush
-    int flush_timeout_ms; // max time to wait before auto flush
+    int dev_fd;           
+    int epoll_fd;         
+    int watermark;       /* flush when pending count reaches this threshold */
+    int flush_timeout_ms; /* flush pending batch after this many ms even if watermark not hit */
 
-    pthread_mutex_t    lock;
+    pthread_mutex_t    lock; 
 
-    struct pending_batch pending; // requests batch not yet sent to kernel
-    struct batch_tracker *inflight; // requests batch already sent to kernel
+    struct pending_batch  pending;   /* requests waiting to be sent to kernel */
+    struct batch_tracker *inflight;  /* linked list of batches sent but not yet acked */
 
-    int next_user_id;
-    int core_owner[MAX_PIM_UNIT]; // track which user owns each pim core, -1 is free
+    int next_user_id;              
+    int core_owner[MAX_PIM_UNIT];  /* user_id that owns each core, -1 if free */
 
-    pthread_t   completer_tid; // the background thread that watch epoll
-    atomic_int  running;
+    pthread_t  bg_completer_tid; 
+    pthread_t  bg_check_tid;    
+    void  *mem_base;   
+    size_t chunk_size; 
+    int    num_chunks; /* total chunks available = PIM_MEM_MAX_PAGES * PAGE_SIZE / chunk_size */
+    bool  *chunk_free; /* chunk_free[i] = true means chunk slot i is available for allocation */
+
+    int pfn2core_id[MAX_PIM_UNIT]; 
+    struct timeval last_pause[MAX_PIM_UNIT]; 
+    struct timeval last_resume[MAX_PIM_UNIT]; 
+    bool is_penalty[MAX_PIM_UNIT]; // 1: pim owned; 0: cpu owned
+    size_t pause_penalty; // the minimum interval between resume and pause
+    size_t resume_watermark; // the minimum interval between pause and resume
+
 } lib;
 
-/* -------------------------------------------------------------------------
- * Forward declarations
- * ---------------------------------------------------------------------- */
+// Forward declarations
 static void  flush_pending_locked(void);
 static void *completer_loop(void *arg);
+static void *bg_check_loop(void *arg);
 
-/* -------------------------------------------------------------------------
- * Library lifecycle
- * ---------------------------------------------------------------------- */
+// Library lifecycle
 
-int pim_lib_init(int watermark, int flush_timeout_ms)
+
+int pim_lib_init(int watermark, int flush_timeout_ms, size_t chunk_size)
+/* Initializes the library: opens the PIM device, mmaps the non-cacheable memory pool,
+ * starts the bg_completer and bg_check background threads.
+ * Must be called once before any other pim_* function. Returns 0 on success, -1 on error. */
 {
-    memset(&lib, 0, sizeof(lib)); // initialize all fields to 0/NULL/false  
-    memset(lib.core_owner, -1, sizeof(lib.core_owner)); // initilize all cores as free (owner = -1)
+    memset(&lib, 0, sizeof(lib));
+    memset(lib.core_owner, -1, sizeof(lib.core_owner));
+    memset(lib.pfn2core_id, -1, sizeof(lib.pfn2core_id));
+    memset(lib.is_penalty,   0, sizeof(lib.is_penalty));   // all start CPU_OWNED
 
     lib.watermark        = watermark        > 0 ? watermark        : PIM_DEFAULT_WATERMARK;
     lib.flush_timeout_ms = flush_timeout_ms > 0 ? flush_timeout_ms : PIM_DEFAULT_FLUSH_MS;
+
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    if (page_size <= 0 || chunk_size == 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    /* chunk_size must be page-aligned: the driver maps in PAGE_SIZE steps */
+    if (chunk_size % (size_t)page_size != 0) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    size_t total_pool = (size_t)PIM_MEM_MAX_PAGES * (size_t)page_size;
+
+    /* Derive how many per-core chunks fit in the driver's fixed pool */
+    int num_chunks = (int)(total_pool / chunk_size);
+    if (num_chunks == 0) {
+        errno = EINVAL;
+        return -1;
+    }
 
     lib.dev_fd = open(DEVICE_PATH, O_RDWR);
     if (lib.dev_fd < 0)
@@ -114,46 +140,80 @@ int pim_lib_init(int watermark, int flush_timeout_ms)
     if (lib.epoll_fd < 0)
         goto err_dev;
 
+    lib.chunk_free = malloc((size_t)num_chunks * sizeof(bool));
+    if (!lib.chunk_free)
+        goto err_epoll;
+    for (int i = 0; i < num_chunks; i++)
+        lib.chunk_free[i] = true;
+
+    /*
+     * mmap the full 64-page non-cacheable slab in one call.
+     * The driver ignores the offset argument and always maps from
+     * pim_mempool + 0; MAP_SHARED is required for the non-cacheable
+     * pgprot set by the driver to take effect.
+     */
+    lib.mem_base = mmap(NULL, total_pool, PROT_READ | PROT_WRITE, MAP_SHARED,
+                        lib.dev_fd, 0);
+    if (lib.mem_base == MAP_FAILED)
+        goto err_chunk_free;
+
+    lib.chunk_size = chunk_size;
+    lib.num_chunks = num_chunks;
+
     pthread_mutex_init(&lib.lock, NULL);
     atomic_store(&lib.running, 1);
 
-    // start the background completer thread, which will monitor the shared epoll instance for completions and also handle timeout-based flushing
-    if (pthread_create(&lib.completer_tid, NULL, completer_loop, NULL) != 0)
-        goto err_epoll;
+    pthread_create(&lib.bg_check_tid, NULL, bg_check_loop, NULL);
+
+    if (pthread_create(&lib.bg_completer_tid, NULL, completer_loop, NULL) != 0)
+        goto err_mmap;
 
     return 0;
 
+err_mmap:
+    munmap(lib.mem_base, total_pool);
+err_chunk_free:
+    free(lib.chunk_free);
 err_epoll:
     close(lib.epoll_fd);
-    // fall through
 err_dev:
     close(lib.dev_fd);
     return -1;
 }
 
 void pim_lib_fini(void)
+/* Shuts down the library: stops background threads, flushes any remaining pending
+ * requests, unmaps memory, and closes all file descriptors. */
 {
     atomic_store(&lib.running, 0);
-    pthread_join(lib.completer_tid, NULL);
+    pthread_join(lib.bg_completer_tid, NULL);
+    pthread_join(lib.bg_check_tid, NULL);
+
 
     pthread_mutex_lock(&lib.lock);
     if (lib.pending.count > 0)
         flush_pending_locked();
     pthread_mutex_unlock(&lib.lock);
 
+    munmap(lib.mem_base, lib.chunk_size * (size_t)lib.num_chunks);
+    free(lib.chunk_free);
+
     close(lib.epoll_fd);
     close(lib.dev_fd);
     pthread_mutex_destroy(&lib.lock);
 }
 
-/* -------------------------------------------------------------------------
- * User management
- * ---------------------------------------------------------------------- */
+ // User management
 
 pim_user_t *pim_user_create(void)
+/* Allocates and registers a new user handle. Each user thread should create its own
+ * handle before calling pim_alloc_cores. Returns NULL on allocation failure. */
 {
     pim_user_t *u = calloc(1, sizeof(*u));
     if (!u) return NULL;
+
+    /* Mark all per-core chunk indices as unassigned */
+    memset(u->core2chunk, -1, sizeof(u->core2chunk));
 
     pthread_mutex_lock(&lib.lock);
     u->user_id = lib.next_user_id++;
@@ -162,31 +222,44 @@ pim_user_t *pim_user_create(void)
 }
 
 void pim_user_destroy(pim_user_t *user)
+/* Releases all cores owned by this user and frees the user handle. */
 {
     if (!user) return;
     pim_free_cores(user);
     free(user);
 }
 
+
+
 /* -------------------------------------------------------------------------
  * Core allocation
  * ---------------------------------------------------------------------- */
 
-int pim_alloc_cores(pim_user_t *user, int *core_ids, int count)
+
+int pim_alloc_cores(pim_user_t *user, int *allocated_core_ids, int count)
+/* User can allocate cores, they need to pass in the number of cores to allocate(count)
+ * and it will return a list of allocated core IDs 
+ * User should pass in the array to store the allocated core IDs, it cannot be NULL
+ */
 {
-    if (!user || !core_ids || count <= 0) {
+    if (!user || !allocated_core_ids || count <= 0) {
         errno = EINVAL;
         return -1;
     }
 
     pthread_mutex_lock(&lib.lock);
 
-    /* Verify enough free cores exist before committing anything */
-    int avail = 0;
+    /* Pre-check: enough free PIM cores */
+    int avail_cores = 0;
     for (int i = 0; i < MAX_PIM_UNIT; i++)
-        if (lib.core_owner[i] == -1) avail++;
+        if (lib.core_owner[i] == -1) avail_cores++;
 
-    if (avail < count) {
+    /* Pre-check: enough free chunk slots (one chunk needed per core) */
+    int avail_chunks = 0;
+    for (int i = 0; i < lib.num_chunks; i++)
+        if (lib.chunk_free[i]) avail_chunks++;
+
+    if (avail_cores < count || avail_chunks < count) {
         pthread_mutex_unlock(&lib.lock);
         errno = ENOSPC;
         return -1;
@@ -194,26 +267,55 @@ int pim_alloc_cores(pim_user_t *user, int *core_ids, int count)
 
     int found = 0;
     for (int i = 0; i < MAX_PIM_UNIT && found < count; i++) {
-        if (lib.core_owner[i] == -1) {
-            lib.core_owner[i]  = user->user_id;
-            user->owns_core[i] = true;
-            core_ids[found++]  = i;
+        if (lib.core_owner[i] != -1)
+            continue;
+
+        /* Find a free chunk slot for this core */
+        int chunk_idx = -1;
+        for (int j = 0; j < lib.num_chunks; j++) {
+            if (lib.chunk_free[j]) {
+                chunk_idx = j;
+                lib.chunk_free[j] = false;
+                break;
+            }
         }
+        /* chunk_idx != -1 guaranteed by the pre-check above */
+
+        lib.core_owner[i]          = user->user_id;
+        user->owns_core[i]         = true;
+        user->core2chunk[i]    = chunk_idx;
+        
+        user->core_mode[i] = false;  /* starts HOST_OWNED */
+        allocated_core_ids[found++]          = i;
+
+        // CHANGE:
+        lib.pfn2core_id[chunk_idx] = i; // record the mapping from chunk slot to core id
+        gettimeofday(&lib.last_pause[i], NULL);  // have to set this otherwise in check() the 
+                                                 // time_since_last_pause will be very large and cause 
+                                                 // incorrect resume when user first try to access the core
+        lib.is_penalty[i] = false;  // starts HOST_OWNED
     }
 
     pthread_mutex_unlock(&lib.lock);
     return 0;
 }
 
+
 void pim_free_cores(pim_user_t *user)
+/* Releases all cores owned by this user: clears pfn2core_id, returns chunk slots to
+ * the pool, and resets all per-core ownership state. */
 {
     if (!user) return;
     pthread_mutex_lock(&lib.lock);
     for (int i = 0; i < MAX_PIM_UNIT; i++) {
-        if (user->owns_core[i]) {
-            lib.core_owner[i]  = -1;
-            user->owns_core[i] = false;
-        }
+        if (!user->owns_core[i])
+            continue;
+        lib.pfn2core_id[user->core2chunk[i]] = -1; // clear the pfn to core id mapping
+        lib.core_owner[i]                      = -1;
+        lib.chunk_free[user->core2chunk[i]] = true;
+        user->owns_core[i]                     = false;
+        user->core2chunk[i]                = -1;
+        user->core_mode[i]             = false;
     }
     pthread_mutex_unlock(&lib.lock);
 }
@@ -223,17 +325,31 @@ void pim_free_cores(pim_user_t *user)
  * ---------------------------------------------------------------------- */
 
 pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT])
+
+/* User can submit a list of commands to the to the pim core he has
+ * allocated. This function will also modify the core mode between PIM mode and HOST mode
+ * according to commands.
+ * Returns a handle that can be used to query or wait for
+ * completion, or NULL on error. */
+
 {
-    // cmd_list: the caller's commands for each core, e.g. {PIM_START, PIM_NOP, PIM_PAUSE, ...}
-    if (!user || !cmd_list) {
+    if (!cmd_list) {
         errno = EINVAL;
         return NULL;
     }
 
-    /* Ownership check: user must only target cores it has allocated */
     for (int i = 0; i < MAX_PIM_UNIT; i++) {
-        if (cmd_list[i] != PIM_NOP && !user->owns_core[i]) {
+        // ownership check:
+        if (!user->owns_core[i]) {
             fprintf(stderr, "pim_submit: user %d does not own core %d\n",
+                    user->user_id, i);
+            errno = EACCES;
+            return NULL;
+        }
+        // if there are already pending command for this core, we should not allow user to submit 
+        // new command before the previous one is fulfilled
+        if (lib.pending.cmd_list[i] != -1) {
+            fprintf(stderr, "pim_submit: user %d has pending command for core %d\n",
                     user->user_id, i);
             errno = EACCES;
             return NULL;
@@ -247,17 +363,13 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
 
     pthread_mutex_lock(&lib.lock);
 
-    /* OR-merge into the pending batch (ownership guarantees disjoint cores) */
     for (int i = 0; i < MAX_PIM_UNIT; i++) {
-        if (cmd_list[i] != PIM_NOP)
-            lib.pending.cmd_list[i] = cmd_list[i];
+        lib.pending.cmd_list[i] = cmd_list[i];
     }
 
-    /* Record timestamp of the first submission in this batch */
     if (lib.pending.count == 0)
-        clock_gettime(CLOCK_MONOTONIC, &lib.pending.first_submit_ts);
+        gettimeofday(&lib.pending.first_submit_ts, NULL);
 
-    /* Append to pending handle list */
     if (lib.pending.tail)
         lib.pending.tail->next = req;
     else
@@ -265,7 +377,17 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
     lib.pending.tail = req;
     lib.pending.count++;
 
-    /* Watermark check: flush immediately if we've hit the threshold */
+    // Per-core ownership update.  
+    
+    for (int i = 0; i < MAX_PIM_UNIT; i++) {
+        if (!user->owns_core[i])
+            continue;
+        if (cmd_list[i] == PIM_START || cmd_list[i] == MEM_RESUME)
+            user->core_mode[i] = true;   /* core i: PIM takes ownership */
+        else if (cmd_list[i] == MEM_PAUSE)
+            user->core_mode[i] = false;  /* core i: host takes ownership */
+    }
+
     if (lib.pending.count >= lib.watermark)
         flush_pending_locked();
 
@@ -273,68 +395,168 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
     return req;
 }
 
-/* -------------------------------------------------------------------------
- * Completion
- * ---------------------------------------------------------------------- */
+// Completion  
 
 int pim_poll(pim_req_handle_t *req)
+
+/* User can check if the request is complete.
+ * Returns 1 if req is complete, 0 if still pending, or -1 on error. */
+
 {
     if (!req) return -1;
     return atomic_load(&req->done) ? 1 : 0;
 }
 
 int pim_wait(pim_req_handle_t *req, int timeout_ms)
+/* Blocks until req is complete or timeout_ms milliseconds elapse.
+ * Pass timeout_ms = -1 to wait forever. Returns 0 on completion, -1 on timeout (errno=ETIMEDOUT). */
 {
     if (!req) {
         errno = EINVAL;
         return -1;
     }
 
-    struct timespec deadline = {0};
+    struct timeval deadline = {0};
     if (timeout_ms >= 0) {
-        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        gettimeofday(&deadline, NULL);
         deadline.tv_sec  += timeout_ms / 1000;
-        deadline.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
-        if (deadline.tv_nsec >= 1000000000L) {
-            deadline.tv_sec++;
-            deadline.tv_nsec -= 1000000000L;
-        }
+        deadline.tv_usec += (timeout_ms % 1000) * 1000;
     }
 
     while (!atomic_load(&req->done)) {
         if (timeout_ms >= 0) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
+            struct timeval now;
+            gettimeofday(&now, NULL);
             if (now.tv_sec > deadline.tv_sec ||
-                (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+                (now.tv_sec == deadline.tv_sec && now.tv_usec >= deadline.tv_usec)) {
                 errno = ETIMEDOUT;
                 return -1;
             }
         }
-        usleep(100); /* 0.1 ms poll interval */
+        usleep(100);
     }
     return 0;
 }
 
 void pim_req_free(pim_req_handle_t *req)
+/* Frees a request handle. Only call after pim_poll or pim_wait confirms completion. */
 {
     free(req);
 }
 
-/* -------------------------------------------------------------------------
- * Internal: flush the pending batch to the kernel (caller must hold lib.lock)
- * ---------------------------------------------------------------------- */
+
+// CPU-PIM Access Management
+
+
+enum acc_state_t { SUCC, FAIL};
+
+// Do we need this function?
+static inline void pause_core(int core_id)
+/* Internal: sends MEM_PAUSE to core_id and waits for ack. Called by bg_check_loop only.
+ * Updates last_pause and clears is_penalty so the core is marked CPU_OWNED. */
+{
+    char cmd_list[MAX_PIM_UNIT];
+    memset(cmd_list, -1, sizeof(cmd_list));
+    cmd_list[core_id] = MEM_PAUSE;
+
+    pim_req_handle_t *req = pim_submit(NULL, cmd_list);
+    if (!req) {
+        fprintf(stderr, "pause_core: failed to submit pause for core %d\n", core_id);
+        return;
+    }
+
+    pthread_mutex_lock(&lib.lock);
+    flush_pending_locked();
+    pthread_mutex_unlock(&lib.lock);
+
+    if (pim_wait(req, -1) != 0) {
+        fprintf(stderr, "pause_core: failed to wait for pause completion on core %d\n", core_id);
+    }
+    pim_req_free(req);
+
+    gettimeofday(&lib.last_pause[core_id], NULL); 
+}
+
+static inline void resume_core(int core_id)
+/* Internal: sends MEM_RESUME to core_id and waits for ack. Called by bg_check_loop only
+ * when CPU has overstayed resume_watermark. Updates last_resume and sets is_penalty. */
+{
+    char cmd_list[MAX_PIM_UNIT];
+    memset(cmd_list, -1, sizeof(cmd_list));
+    cmd_list[core_id] = MEM_RESUME;
+
+    pim_req_handle_t *req = pim_submit(NULL, cmd_list);
+    if (!req) {
+        fprintf(stderr, "resume_core: failed to submit resume for core %d\n", core_id);
+        return;
+    }
+
+    pthread_mutex_lock(&lib.lock);
+    flush_pending_locked();
+    pthread_mutex_unlock(&lib.lock);
+
+    if (pim_wait(req, -1) != 0) {
+        fprintf(stderr, "resume_core: failed to wait for resume completion on core %d\n", core_id);
+    }
+    pim_req_free(req);
+
+    gettimeofday(&lib.last_resume[core_id], NULL);
+}
+
+
+static inline acc_state_t check(int core_id) 
+{
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    long time_since_last_pause = (now.tv_sec - lib.last_pause[core_id].tv_sec) * 1000L +
+                                (now.tv_usec - lib.last_pause[core_id].tv_usec) / 1000L;
+    long time_since_last_resume = (now.tv_sec - lib.last_resume[core_id].tv_sec) * 1000L +
+                           (now.tv_usec - lib.last_resume[core_id].tv_usec) / 1000L;
+    
+    if (lib.is_penalty[core_id]) {
+        // pim owned the core/memory chunk
+        if (time_since_last_resume < lib.pause_penalty) {
+            // try to access it within penalty time
+            return FAIL;
+        }
+    } else {
+        // cpu owned the core/memory chunk
+        if (time_since_last_pause > lib.resume_watermark) {
+            resume_core(core_id);
+            return FAIL;
+        }
+    }
+    return SUCC;
+}
+
+acc_ret read_64(size_t addr) {
+    int pfn = (addr - (size_t)lib.mem_base) / lib.chunk_size;
+    int core_id = lib.pfn2core_id[pfn];
+
+    if (check(core_id) == FAIL) {
+        return (acc_ret){ .ret_state = FAIL, .val = 0};
+    }
+    uint64_t val = *addr;
+    return (acc_ret){ .ret_state = SUCC, .val = val };
+}
+
+acc_ret write_64(size_t addr, uint64_t val) {
+    int pfn     = (addr - (size_t)lib.mem_base) / lib.chunk_size;
+    int core_id = lib.pfn2core_id[pfn];
+
+    if (check(core_id) == FAIL)
+        return (acc_ret){ .ret_state = FAIL, .val = 0 };
+
+    *(volatile uint64_t *)addr = val;
+    return (acc_ret){ .ret_state = SUCC, .val = 0 };
+}
 
 static void flush_pending_locked(void)
+/* flush all the pending requests to the kernel*/
 {
     if (lib.pending.count == 0)
         return;
 
-    /*
-     * Each kernel submission gets its own eventfd. All req handles in this
-     * batch share the same efd — when the kernel signals it the completer
-     * thread marks all of them done at once.
-     */
     int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (efd < 0) {
         perror("pim flush: eventfd");
@@ -348,74 +570,84 @@ static void flush_pending_locked(void)
     }
     bt->efd      = efd;
     bt->req_head = lib.pending.head;
-
-    /* Prepend to inflight list */
     bt->next     = lib.inflight;
     lib.inflight = bt;
 
-    /*
-     * Register efd with the library's shared epoll. Store `bt` in data.ptr
-     * so the completer thread can find all associated handles immediately.
-     * There is only one epoll_fd for the whole library (as noted in the
-     * example comments).
-     */
     struct epoll_event ev = {
         .events   = EPOLLIN,
         .data.ptr = bt,
     };
     epoll_ctl(lib.epoll_fd, EPOLL_CTL_ADD, efd, &ev);
 
-    /* Submit to kernel */
     struct pim_req_t kreq;
     kreq.event_fd = efd;
     memcpy(kreq.req_list, lib.pending.cmd_list, MAX_PIM_UNIT);
     if (ioctl(lib.dev_fd, IOCTL_MAGIC, &kreq) < 0)
         perror("pim flush: ioctl");
 
-    /* Reset pending batch for the next round */
-    memset(lib.pending.cmd_list, PIM_NOP, sizeof(lib.pending.cmd_list));
+    // update the last pause/resume time and penalty state for each core according to the command list
+    // might not be too accurate since this is not the point it start execution,
+    // we cannot guarantee the order of command execution for different cores in the kernel, 
+    // but it still probably be good for our current design
+    for (int i = 0; i < MAX_PIM_UNIT; i++) {
+        if (lib.pending.cmd_list[i] == MEM_PAUSE) {
+            gettimeofday(&lib.last_pause[i], NULL);
+            lib.is_penalty[i] = false;
+        } else if (lib.pending.cmd_list[i] == MEM_RESUME) {
+            gettimeofday(&lib.last_resume[i], NULL);
+            lib.is_penalty[i] = true;
+    }
+}
+
+    memset(lib.pending.cmd_list, -1, sizeof(lib.pending.cmd_list));
     lib.pending.count = 0;
     lib.pending.head  = NULL;
     lib.pending.tail  = NULL;
 }
 
-/* -------------------------------------------------------------------------
- * Background completer thread
- *
- * Uses non-blocking epoll_wait (timeout=0) in a meta-loop, as described in
- * the example comments. This avoids blocking the thread indefinitely and
- * allows the timeout-flush logic to run on every iteration.
- * ---------------------------------------------------------------------- */
+/*  Background  thread */
+
+static void *bg_check_loop(void *arg)
+/* Background watchdog thread. Scans all allocated cores every 500µs and calls check().
+ * If a core is CPU_OWNED and has exceeded resume_watermark, forces a resume so PIM
+ * is not blocked indefinitely. Acts as a safety net for when no read_64/write_64 is active. */
+{
+    (void)arg;
+    while (atomic_load(&lib.running)) {
+        for (int i = 0; i < MAX_PIM_UNIT; i++) {
+            if (lib.pfn2core_id[i] == -1) continue;
+            if (check(i) == FAIL && !lib.is_penalty[i])
+                resume_core(i);    // CPU overstayed, force resume
+        }
+        usleep(500);
+    }
+    return NULL;
+}
 
 static void *completer_loop(void *arg)
 {
     (void)arg;
-    struct epoll_event events[64]; /* up to 64 completions per iteration */
+    struct epoll_event events[64];
 
     while (atomic_load(&lib.running)) {
 
-        /* Non-blocking: return immediately with however many are ready */
         int n = epoll_wait(lib.epoll_fd, events, 64, 0);
 
         for (int i = 0; i < n; i++) {
             struct batch_tracker *bt = events[i].data.ptr;
 
-            /* Drain the eventfd so epoll stops reporting it */
             uint64_t val;
             read(bt->efd, &val, sizeof(val));
 
-            /* Mark every request handle in this batch as complete */
             struct pim_req_handle *r = bt->req_head;
             while (r) {
                 atomic_store(&r->done, 1);
                 r = r->next;
             }
 
-            /* Remove efd from epoll and close it */
             epoll_ctl(lib.epoll_fd, EPOLL_CTL_DEL, bt->efd, NULL);
             close(bt->efd);
 
-            /* Remove bt from the inflight list and free it */
             pthread_mutex_lock(&lib.lock);
             struct batch_tracker **pp = &lib.inflight;
             while (*pp && *pp != bt)
@@ -426,26 +658,21 @@ static void *completer_loop(void *arg)
 
             free(bt);
         }
-
-        /*
-         * Timeout flush: if the pending batch has been sitting longer than
-         * flush_timeout_ms, push it to the kernel even if the watermark
-         * has not been reached.
-         */
+        // force to flush the pending request if the pending request has been waiting
+        //  for too long
         pthread_mutex_lock(&lib.lock);
         if (lib.pending.count > 0) {
-            struct timespec now;
-            clock_gettime(CLOCK_MONOTONIC, &now);
+            struct timeval now;
+            gettimeofday(&now, NULL);
             long elapsed_ms =
                 (now.tv_sec  - lib.pending.first_submit_ts.tv_sec)  * 1000L +
-                (now.tv_nsec - lib.pending.first_submit_ts.tv_nsec) / 1000000L;
+                (now.tv_usec - lib.pending.first_submit_ts.tv_usec) / 1000L;
             if (elapsed_ms >= lib.flush_timeout_ms)
                 flush_pending_locked();
         }
         pthread_mutex_unlock(&lib.lock);
 
-        usleep(500); /* 0.5 ms between iterations — keeps CPU low without
-                        adding meaningful latency vs. the flush timeout */
+        usleep(500);
     }
 
     return NULL;

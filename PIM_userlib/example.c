@@ -61,7 +61,7 @@ done:
 int main(void)
 {
     /* Use a low watermark so the two-user demo flushes quickly */
-    if (pim_lib_init(2, 50) < 0) {
+    if (pim_lib_init(2, 50, (1 << 12)) < 0) {
         perror("pim_lib_init");
         return EXIT_FAILURE;
     }

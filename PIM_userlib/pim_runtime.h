@@ -2,6 +2,7 @@
 #define PIM_RUNTIME_H
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 #ifdef __cplusplus

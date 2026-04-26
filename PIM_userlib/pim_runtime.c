@@ -21,6 +21,13 @@
 #define DEVICE_PATH  "/dev/PIM_controller"
 #define IOCTL_MAGIC  114514
 
+/*
+ * TODO
+ * Proofread pim_submit() since it's weird for it to use such a huge locked area
+ * Proogread why pim_pause/pim_resume needs flush pending locks
+ * 367 weird check, consider another datatype?
+ */
+
 /* Mirror of kernel ABI — must stay in sync with PIM_control_cmd.h */
 struct pim_req_t {
     int  event_fd;
@@ -65,6 +72,7 @@ static struct {
     int epoll_fd;         
     int watermark;       /* flush when pending count reaches this threshold */
     int flush_timeout_ms; /* flush pending batch after this many ms even if watermark not hit */
+    atomic_int running;
 
     pthread_mutex_t    lock; 
 
@@ -85,11 +93,20 @@ static struct {
     struct timeval last_pause[MAX_PIM_UNIT]; 
     struct timeval last_resume[MAX_PIM_UNIT]; 
     bool is_penalty[MAX_PIM_UNIT]; // 1: pim owned; 0: cpu owned
-    size_t pause_penalty; // the minimum interval between resume and pause
-    size_t resume_watermark; // the minimum interval between pause and resume
+    long int pause_penalty; // the minimum interval between resume and pause
+    long int resume_watermark; // the minimum interval between pause and resume
 
 } lib;
 
+enum rw_state_t{
+    SUCC,
+    FAIL
+};
+
+struct rw_ret{
+    enum rw_state_t state;
+    uint64_t data;
+};
 // Forward declarations
 static void  flush_pending_locked(void);
 static void *completer_loop(void *arg);
@@ -445,11 +462,6 @@ void pim_req_free(pim_req_handle_t *req)
 }
 
 
-// CPU-PIM Access Management
-
-
-enum acc_state_t { SUCC, FAIL};
-
 // Do we need this function?
 static inline void pause_core(int core_id)
 /* Internal: sends MEM_PAUSE to core_id and waits for ack. Called by bg_check_loop only.
@@ -504,7 +516,7 @@ static inline void resume_core(int core_id)
 }
 
 
-static inline acc_state_t check(int core_id) 
+static inline enum rw_state_t check(int core_id) 
 {
     struct timeval now;
     gettimeofday(&now, NULL);
@@ -517,7 +529,7 @@ static inline acc_state_t check(int core_id)
         // pim owned the core/memory chunk
         if (time_since_last_resume < lib.pause_penalty) {
             // try to access it within penalty time
-            return FAIL;
+                return FAIL;
         }
     } else {
         // cpu owned the core/memory chunk
@@ -529,26 +541,26 @@ static inline acc_state_t check(int core_id)
     return SUCC;
 }
 
-acc_ret read_64(size_t addr) {
+struct rw_ret read_64(size_t addr) {
     int pfn = (addr - (size_t)lib.mem_base) / lib.chunk_size;
     int core_id = lib.pfn2core_id[pfn];
 
     if (check(core_id) == FAIL) {
-        return (acc_ret){ .ret_state = FAIL, .val = 0};
+        return (struct rw_ret){ .state = FAIL, .data = 0};
     }
-    uint64_t val = *addr;
-    return (acc_ret){ .ret_state = SUCC, .val = val };
+    uint64_t val = *(uint64_t*)addr;
+    return (struct rw_ret){ .state = SUCC, .data = val };
 }
 
-acc_ret write_64(size_t addr, uint64_t val) {
+struct rw_ret write_64(size_t addr, uint64_t val) {
     int pfn     = (addr - (size_t)lib.mem_base) / lib.chunk_size;
     int core_id = lib.pfn2core_id[pfn];
 
     if (check(core_id) == FAIL)
-        return (acc_ret){ .ret_state = FAIL, .val = 0 };
+        return (struct rw_ret){ .state = FAIL, .data = 0 };
 
     *(volatile uint64_t *)addr = val;
-    return (acc_ret){ .ret_state = SUCC, .val = 0 };
+    return (struct rw_ret){ .state = SUCC, .data = 0 };
 }
 
 static void flush_pending_locked(void)

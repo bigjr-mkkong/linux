@@ -23,9 +23,7 @@
 
 /*
  * TODO
- * Proofread pim_submit() since it's weird for it to use such a huge locked area
- * Proogread why pim_pause/pim_resume needs flush pending locks
- * 367 weird check, consider another datatype?
+ * flush_pending_locked() is not RCU based solution. It's calling gettimeofday() over lib.last_resume and lib.last_pause and put whole update context into locked area. This is not how RCU works. Ideal case should be flush_pending() which will submit requests to driver(locked), update copy of last_resume and last_pause(lockfree) and switch the read poiner for check() and read()/write() (locked)
  */
 
 /* Mirror of kernel ABI — must stay in sync with PIM_control_cmd.h */
@@ -114,6 +112,22 @@ static void *bg_check_loop(void *arg);
 
 // Library lifecycle
 
+static inline bool is_active_pimcmd(char pimcmd){
+    switch (pimcmd){
+        case PIM_START:
+        case MEM_PAUSE:
+        case MEM_RESUME:
+        case PIM_QUERY:
+            return true;
+            break;
+        default:
+            return false;
+            break;
+    }
+
+    return false;
+
+}
 
 int pim_lib_init(int watermark, int flush_timeout_ms, size_t chunk_size)
 /* Initializes the library: opens the PIM device, mmaps the non-cacheable memory pool,
@@ -365,7 +379,13 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
         }
         // if there are already pending command for this core, we should not allow user to submit 
         // new command before the previous one is fulfilled
-        if (lib.pending.cmd_list[i] != -1) {
+        /* if (lib.pending.cmd_list[i] != -1) { */
+        /*     fprintf(stderr, "pim_submit: user %d has pending command for core %d\n", */
+        /*             user->user_id, i); */
+        /*     errno = EACCES; */
+        /*     return NULL; */
+        /* } */
+        if (is_active_pimcmd(lib.pending.cmd_list[i])) {
             fprintf(stderr, "pim_submit: user %d has pending command for core %d\n",
                     user->user_id, i);
             errno = EACCES;

@@ -159,15 +159,15 @@ int pim_lib_init(int watermark, int flush_timeout_ms, size_t chunk_size)
     // if (pthread_create(&lib.bg_completer_tid, NULL, completer_loop, NULL) != 0)
     //     goto err_mmap;
 
-    if (pthread_create(&lib.bg_check_tid, NULL, bg_check_loop, NULL) != 0)
-        automic_store(&lib.running, 0);
+    if (pthread_create(&lib.bg_check_tid, NULL, bg_check_loop, NULL) != 0) {
+        atomic_store(&lib.running, 0);
         goto err_mmap;
-
+    }
     if (pthread_create(&lib.bg_completer_tid, NULL, completer_loop, NULL) != 0) {
         atomic_store(&lib.running, 0);
         pthread_join(lib.bg_check_tid, NULL);
         goto err_mmap;
-}
+    }
 
     return 0;
 
@@ -361,7 +361,7 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
         // if user_id is -1, it means this is a internal submission from library itself, 
         // we can skip ownership check in this case since library can submit command for any core for 
         // background checking and pausing/resuming
-        if (user.user_id != -1 && !is_active_pimcmd(cmd_list[i]) && !user->owns_core[i]) {
+        if (user->user_id != -1 && !is_active_pimcmd(cmd_list[i]) && !user->owns_core[i]) {
             fprintf(stderr, "pim_submit: user %d does not own core %d\n",
                     user->user_id, i);
             errno = EACCES;

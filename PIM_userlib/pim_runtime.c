@@ -24,46 +24,8 @@
 /*
  * TODO
  * flush_pending_locked() is not RCU based solution. It's calling gettimeofday() over lib.last_resume and lib.last_pause and put whole update context into locked area. This is not how RCU works. Ideal case should be flush_pending() which will submit requests to driver(locked), update copy of last_resume and last_pause(lockfree) and switch the read poiner for check() and read()/write() (locked)
+ * There's no definition of pim_read() in pim_runtime.h. Also read/write are lack of user token
  */
-
-/* Mirror of kernel ABI — must stay in sync with PIM_control_cmd.h */
-struct pim_req_t {
-    int  event_fd;
-    char req_list[MAX_PIM_UNIT];
-};
-
-// Internal structs
-
-struct pim_req_handle {
-    atomic_int            done; /* set to 1 by completer_loop when kernel signals completion */
-    struct pim_req_handle *next; /* links handles within the same batch */
-};
-
-struct batch_tracker {
-    int                   efd;      /* eventfd the kernel writes to on completion */
-    struct pim_req_handle *req_head; /* first handle in the batch, used to mark all done */
-    struct batch_tracker  *next;     /* next in lib.inflight linked list */
-};
-
-struct pending_batch {
-    char                  cmd_list[MAX_PIM_UNIT]; /* one command slot per core, PIM_NOP if unused */
-    int                   count;                  /* number of submissions accumulated so far */
-    struct pim_req_handle *head;                  /* first handle in this batch */
-    struct pim_req_handle *tail;                  /* last handle, for O(1) append */
-    struct timeval         first_submit_ts;        /* timestamp of first submission, for timeout flush */
-};
-
-
- 
-struct pim_user {
-    int  user_id;
-    bool owns_core[MAX_PIM_UNIT];
-
-    int   core2chunk[MAX_PIM_UNIT];     /* -1 when core not owned */
-    bool  core_mode[MAX_PIM_UNIT];  /* false = HOST_OWNED */ // need to verify
-};
-
- // Global library state (singleton)
 
 static struct {
     int dev_fd;           
@@ -95,16 +57,6 @@ static struct {
     long int resume_watermark; // the minimum interval between pause and resume
 
 } lib;
-
-enum rw_state_t{
-    SUCC,
-    FAIL
-};
-
-struct rw_ret{
-    enum rw_state_t state;
-    uint64_t data;
-};
 // Forward declarations
 static void  flush_pending_locked(void);
 static void *completer_loop(void *arg);
@@ -210,6 +162,10 @@ err_epoll:
 err_dev:
     close(lib.dev_fd);
     return -1;
+}
+
+void *get_lib_base(){
+    return lib.mem_base;
 }
 
 void pim_lib_fini(void)
@@ -483,7 +439,7 @@ void pim_req_free(pim_req_handle_t *req)
 
 
 // Do we need this function?
-static inline void pause_core(int core_id)
+void pause_core(int core_id)
 /* Internal: sends MEM_PAUSE to core_id and waits for ack. Called by bg_check_loop only.
  * Updates last_pause and clears is_penalty so the core is marked CPU_OWNED. */
 {
@@ -509,7 +465,7 @@ static inline void pause_core(int core_id)
     gettimeofday(&lib.last_pause[core_id], NULL); 
 }
 
-static inline void resume_core(int core_id)
+void resume_core(int core_id)
 /* Internal: sends MEM_RESUME to core_id and waits for ack. Called by bg_check_loop only
  * when CPU has overstayed resume_watermark. Updates last_resume and sets is_penalty. */
 {
@@ -561,22 +517,22 @@ static inline enum rw_state_t check(int core_id)
     return SUCC;
 }
 
-struct rw_ret read_64(size_t addr) {
-    int pfn = (addr - (size_t)lib.mem_base) / lib.chunk_size;
+struct rw_ret read_64(struct pim_user *user, void *addr) {
+    int pfn = ((uint64_t)addr - (uint64_t)lib.mem_base) / lib.chunk_size;
     int core_id = lib.pfn2core_id[pfn];
 
-    if (check(core_id) == FAIL) {
+    if (check(core_id) == FAIL || !user->owns_core[core_id]) {
         return (struct rw_ret){ .state = FAIL, .data = 0};
     }
     uint64_t val = *(uint64_t*)addr;
     return (struct rw_ret){ .state = SUCC, .data = val };
 }
 
-struct rw_ret write_64(size_t addr, uint64_t val) {
-    int pfn     = (addr - (size_t)lib.mem_base) / lib.chunk_size;
+struct rw_ret write_64(struct pim_user *user, void *addr, uint64_t val) {
+    int pfn     = ((uint64_t)addr - (uint64_t)lib.mem_base) / lib.chunk_size;
     int core_id = lib.pfn2core_id[pfn];
 
-    if (check(core_id) == FAIL)
+    if (check(core_id) == FAIL || !user->owns_core[core_id])
         return (struct rw_ret){ .state = FAIL, .data = 0 };
 
     *(volatile uint64_t *)addr = val;

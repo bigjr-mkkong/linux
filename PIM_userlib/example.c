@@ -3,6 +3,7 @@
 #include <string.h>
 #include <pthread.h>
 #include "pim_runtime.h"
+#include <unistd.h>
 
 /*
  * Simulates two independent user tasks each owning a disjoint set of PIM
@@ -51,6 +52,46 @@ static void *user_task(void *arg)
     }
 
     pim_req_free(req);
+
+
+    void* begin = get_lib_base();
+    struct rw_ret ret0;
+    int avail_cores[16] = {0}, avail_ptr = 0;
+    for(int i=0; i<MAX_PIM_UNIT; i++){
+        if(user->owns_core[i]){
+            avail_cores[avail_ptr] = i;
+            avail_ptr++;
+        }
+    }
+
+    /*actual workload begin*/
+    /* Here is mem-intensive task */
+
+    for(int i=0 ;i < avail_ptr; i++){
+        pause_core(avail_cores[i]);
+    }
+
+    for(size_t i=0; i<16; i++) {
+        ret0 = read_64(user, begin + avail_cores[0] * (1<<12) + sizeof(uint64_t) * i);
+        if(ret0.state != SUCC){
+            fprintf(stderr, "Failed to read from core %d offset %ld\n", avail_cores[0], i);
+            goto done;
+        }
+    }
+
+    for(int i=0; i<avail_ptr; i++){
+        resume_core(avail_cores[i]);
+    }
+
+
+    /* Here is CPU intensive work */
+    volatile double workhorse = 1.0001;
+    for(int i=0; i<16; i++){
+        workhorse *= 1.14514;
+        workhorse += 1.1919810;
+    }
+
+
 
 done:
     pim_free_cores(user);

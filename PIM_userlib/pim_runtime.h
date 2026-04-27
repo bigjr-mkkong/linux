@@ -2,8 +2,11 @@
 #define PIM_RUNTIME_H
 
 #include <stddef.h>
-#include <stdio.h>
+#include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
+#include <time.h>
+#include <sys/time.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,6 +31,55 @@ extern "C" {
  */
 #define PIM_MEM_MAX_PAGES      64
 
+struct pim_user {
+    int  user_id;
+    bool owns_core[MAX_PIM_UNIT];
+
+    int   core2chunk[MAX_PIM_UNIT];     /* -1 when core not owned */
+    bool  core_mode[MAX_PIM_UNIT];  /* false = HOST_OWNED */ // need to verify
+};
+/* Mirror of kernel ABI — must stay in sync with PIM_control_cmd.h */
+struct pim_req_t {
+    int  event_fd;
+    char req_list[MAX_PIM_UNIT];
+};
+
+// Internal structs
+
+struct pim_req_handle {
+    atomic_int            done; /* set to 1 by completer_loop when kernel signals completion */
+    struct pim_req_handle *next; /* links handles within the same batch */
+};
+
+struct batch_tracker {
+    int                   efd;      /* eventfd the kernel writes to on completion */
+    struct pim_req_handle *req_head; /* first handle in the batch, used to mark all done */
+    struct batch_tracker  *next;     /* next in lib.inflight linked list */
+};
+
+struct pending_batch {
+    char                  cmd_list[MAX_PIM_UNIT]; /* one command slot per core, PIM_NOP if unused */
+    int                   count;                  /* number of submissions accumulated so far */
+    struct pim_req_handle *head;                  /* first handle in this batch */
+    struct pim_req_handle *tail;                  /* last handle, for O(1) append */
+    struct timeval         first_submit_ts;        /* timestamp of first submission, for timeout flush */
+};
+
+
+ 
+
+ // Global library state (singleton)
+
+
+enum rw_state_t{
+    SUCC,
+    FAIL
+};
+
+struct rw_ret{
+    enum rw_state_t state;
+    uint64_t data;
+};
 typedef struct pim_user       pim_user_t;
 typedef struct pim_req_handle pim_req_handle_t;
 
@@ -125,28 +177,12 @@ void *pim_user_mem(pim_user_t *user, int core_id);
  */
 size_t pim_chunk_size(void);
 
-/*
- * Safe read from the non-cacheable chunk of core_id.
- *
- * offset: byte offset within core_id's chunk (0-based, 0 to chunk_size-1).
- * dst:    destination buffer in normal (cacheable) host memory.
- * len:    number of bytes to read.
- *
- * Only the chunk belonging to core_id is considered.  Other cores' chunks
- * are not paused and are not affected.
- *
- * If core_id's chunk is HOST_OWNED, the read is a direct memcpy.
- * If core_id's chunk is PIM_OWNED, pim_read automatically:
- *   1. Sends MEM_PAUSE to core_id only.
- *   2. Waits for the pause acknowledgement.
- *   3. Copies len bytes from chunk[offset] into dst.
- *   4. Sends MEM_RESUME to core_id.
- *   5. Waits for the resume acknowledgement before returning.
- *
- * Returns 0 on success, -1 on error (errno set).
- */
-int pim_read(pim_user_t *user, int core_id, uint64_t offset, void *dst, size_t len);
 
+void pause_core(int core_id);
+void resume_core(int core_id);
+struct rw_ret read_64(struct pim_user *user, void *addr);
+struct rw_ret write_64(struct pim_user *user, void *addr, uint64_t val);
+void *get_lib_base();
 #ifdef __cplusplus
 }
 #endif

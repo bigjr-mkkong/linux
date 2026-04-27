@@ -16,12 +16,16 @@
  * The user space library I am thing of rn is:
  * 1. User task will claim one(or more) PIM core from it during the initialization
  * 2. User task can submit command to their requested PIM core
- * 3. Library side command receiver should check if user is trying to  control its own allocated core and stop if user want to stop other people's core
+ * 3. Library side command receiver should check if user is trying to  control its own allocated 
+ core and stop if user want to stop other people's core
  * 4. Library need to submit once the number of stacked requests reach the water mark or time is up
- * 5. User task will also trying to ask library if their requests are fulfilled, libarary should be prepared to do it
- * 6. Library should use unblocked epoll(as many other database system) to ask kernel if it complete certain task
+ * 5. User task will also trying to ask library if their requests are fulfilled, libarary should be prepared
+  to do it
+ * 6. Library should use unblocked epoll(as many other database system) to ask kernel if it complete certain 
+ task
  *
- * Below is an example of submit one requests and wait for response. Notice it's using blocking version for demo purpose
+ * Below is an example of submit one requests and wait for response. Notice it's using blocking version for
+  demo purpose
  */
 
 int main() {
@@ -33,7 +37,7 @@ int main() {
      * Open the PIM device for future operation
      * This code only runs once during the initialization
      */
-    dev_fd = open(DEVICE_PATH, O_RDWR);
+    dev_fd = open(DEVICE_PATH, O_RDWR); // using O_RDWR means open the file/device for both reading and writing
     if (dev_fd < 0) {
         perror("Failed to open " DEVICE_PATH " (Are you root?)");
         return EXIT_FAILURE;

@@ -23,9 +23,13 @@
 
 /*
  * TODO
- * flush_pending_locked() is not RCU based solution. It's calling gettimeofday() over lib.last_resume and lib.last_pause and put whole update context into locked area. This is not how RCU works. Ideal case should be flush_pending() which will submit requests to driver(locked), update copy of last_resume and last_pause(lockfree) and switch the read poiner for check() and read()/write() (locked)
- * There's no definition of pim_read() in pim_runtime.h. Also read/write are lack of user token
+ * already solve -> flush_pending_locked() is not RCU based solution. It's calling gettimeofday() over lib.last_resume and lib.last_pause and put whole update context into locked area. This is not how RCU works. Ideal case should be flush_pending() which will submit requests to driver(locked), update copy of last_resume and last_pause(lockfree) and switch the read poiner for check() and read()/write() (locked)
+ * I think you already solve these two below? 
+ * There's no definition of pim_read() in pim_runtime.h. 
+ * Also read/write are lack of user token 
  */
+
+ // Global library state (singleton)
 
 static struct {
     int dev_fd;           
@@ -50,15 +54,16 @@ static struct {
     bool  *chunk_free; /* chunk_free[i] = true means chunk slot i is available for allocation */
 
     int pfn2core_id[MAX_PIM_UNIT]; 
-    struct timeval last_pause[MAX_PIM_UNIT]; 
-    struct timeval last_resume[MAX_PIM_UNIT]; 
-    bool is_penalty[MAX_PIM_UNIT]; // 1: pim owned; 0: cpu owned
+    struct pim_timing timing[2];  /* double buffer: one read by check(), one being written */
+    atomic_int timing_idx; /* index of the buffer check() currently reads from */
+
     long int pause_penalty; // the minimum interval between resume and pause
     long int resume_watermark; // the minimum interval between pause and resume
 
 } lib;
+
 // Forward declarations
-static void  flush_pending_locked(void);
+static void  flush_pending(void);
 static void *completer_loop(void *arg);
 static void *bg_check_loop(void *arg);
 
@@ -89,8 +94,11 @@ int pim_lib_init(int watermark, int flush_timeout_ms, size_t chunk_size)
     memset(&lib, 0, sizeof(lib));
     memset(lib.core_owner, -1, sizeof(lib.core_owner));
     memset(lib.pfn2core_id, -1, sizeof(lib.pfn2core_id));
-    memset(lib.is_penalty,   0, sizeof(lib.is_penalty));   // all start CPU_OWNED
 
+    memset(&lib.timing[0], 0, sizeof(lib.timing[0]));
+    memset(&lib.timing[1], 0, sizeof(lib.timing[1]));
+    atomic_store(&lib.timing_idx, 0);
+    lib.next_user_id = 0;
     lib.watermark        = watermark        > 0 ? watermark        : PIM_DEFAULT_WATERMARK;
     lib.flush_timeout_ms = flush_timeout_ms > 0 ? flush_timeout_ms : PIM_DEFAULT_FLUSH_MS;
 
@@ -146,10 +154,20 @@ int pim_lib_init(int watermark, int flush_timeout_ms, size_t chunk_size)
     pthread_mutex_init(&lib.lock, NULL);
     atomic_store(&lib.running, 1);
 
-    pthread_create(&lib.bg_check_tid, NULL, bg_check_loop, NULL);
+    // pthread_create(&lib.bg_check_tid, NULL, bg_check_loop, NULL);
 
-    if (pthread_create(&lib.bg_completer_tid, NULL, completer_loop, NULL) != 0)
+    // if (pthread_create(&lib.bg_completer_tid, NULL, completer_loop, NULL) != 0)
+    //     goto err_mmap;
+
+    if (pthread_create(&lib.bg_check_tid, NULL, bg_check_loop, NULL) != 0)
+        automic_store(&lib.running, 0);
         goto err_mmap;
+
+    if (pthread_create(&lib.bg_completer_tid, NULL, completer_loop, NULL) != 0) {
+        atomic_store(&lib.running, 0);
+        pthread_join(lib.bg_check_tid, NULL);
+        goto err_mmap;
+}
 
     return 0;
 
@@ -168,19 +186,25 @@ void *get_lib_base(){
     return lib.mem_base;
 }
 
-void pim_lib_fini(void)
-/* Shuts down the library: stops background threads, flushes any remaining pending
- * requests, unmaps memory, and closes all file descriptors. */
+int pim_lib_fini(void)
+/* Shuts down the library: stops background threads, unmaps memory, and closes all
+ * file descriptors. Returns -1 (errno=EBUSY) if there are pending requests that the
+ * caller must flush first via pim_flush(). Returns 0 on success. 
+ * if there are pending request, it will return -1 and let user flush it first*/
 {
+    pthread_mutex_lock(&lib.lock);
+    int pending = lib.pending.count;
+    pthread_mutex_unlock(&lib.lock);
+
+    if (pending > 0) {
+        fprintf(stderr, "pim_lib_fini: %d pending request(s) not yet flushed; call flush before fini\n", pending);
+        errno = EBUSY;
+        return -1;
+    }
+
     atomic_store(&lib.running, 0);
     pthread_join(lib.bg_completer_tid, NULL);
     pthread_join(lib.bg_check_tid, NULL);
-
-
-    pthread_mutex_lock(&lib.lock);
-    if (lib.pending.count > 0)
-        flush_pending_locked();
-    pthread_mutex_unlock(&lib.lock);
 
     munmap(lib.mem_base, lib.chunk_size * (size_t)lib.num_chunks);
     free(lib.chunk_free);
@@ -188,6 +212,7 @@ void pim_lib_fini(void)
     close(lib.epoll_fd);
     close(lib.dev_fd);
     pthread_mutex_destroy(&lib.lock);
+    return 0;
 }
 
  // User management
@@ -216,12 +241,9 @@ void pim_user_destroy(pim_user_t *user)
     free(user);
 }
 
-
-
 /* -------------------------------------------------------------------------
  * Core allocation
  * ---------------------------------------------------------------------- */
-
 
 int pim_alloc_cores(pim_user_t *user, int *allocated_core_ids, int count)
 /* User can allocate cores, they need to pass in the number of cores to allocate(count)
@@ -277,10 +299,14 @@ int pim_alloc_cores(pim_user_t *user, int *allocated_core_ids, int count)
 
         // CHANGE:
         lib.pfn2core_id[chunk_idx] = i; // record the mapping from chunk slot to core id
-        gettimeofday(&lib.last_pause[i], NULL);  // have to set this otherwise in check() the 
-                                                 // time_since_last_pause will be very large and cause 
-                                                 // incorrect resume when user first try to access the core
-        lib.is_penalty[i] = false;  // starts HOST_OWNED
+        struct timeval ts = {0};
+        gettimeofday(&ts, NULL);
+        lib.timing[0].last_pause[i] = ts;
+        lib.timing[1].last_pause[i] = ts;
+        lib.timing[0].is_penalty[i] = false;
+        lib.timing[1].is_penalty[i] = false;
+
+        
     }
 
     pthread_mutex_unlock(&lib.lock);
@@ -303,6 +329,8 @@ void pim_free_cores(pim_user_t *user)
         user->owns_core[i]                     = false;
         user->core2chunk[i]                = -1;
         user->core_mode[i]             = false;
+        // we don't need to modify lib.timing here because pfn2core_id is already
+        // cleared so bg_check_loop will skip the core
     }
     pthread_mutex_unlock(&lib.lock);
 }
@@ -327,7 +355,13 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
 
     for (int i = 0; i < MAX_PIM_UNIT; i++) {
         // ownership check:
-        if (!user->owns_core[i]) {
+        // add is_active_pimcmd here to see if user if trying to submit command for this core
+
+
+        // if user_id is -1, it means this is a internal submission from library itself, 
+        // we can skip ownership check in this case since library can submit command for any core for 
+        // background checking and pausing/resuming
+        if (user.user_id != -1 && !is_active_pimcmd(cmd_list[i]) && !user->owns_core[i]) {
             fprintf(stderr, "pim_submit: user %d does not own core %d\n",
                     user->user_id, i);
             errno = EACCES;
@@ -370,6 +404,8 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
     lib.pending.tail = req;
     lib.pending.count++;
 
+    pthread_mutex_unlock(&lib.lock);
+
     // Per-core ownership update.  
     
     for (int i = 0; i < MAX_PIM_UNIT; i++) {
@@ -381,10 +417,9 @@ pim_req_handle_t *pim_submit(pim_user_t *user, const char cmd_list[MAX_PIM_UNIT]
             user->core_mode[i] = false;  /* core i: host takes ownership */
     }
 
-    if (lib.pending.count >= lib.watermark)
-        flush_pending_locked();
+    // if (lib.pending.count >= lib.watermark)
+    //     flush_pending();
 
-    pthread_mutex_unlock(&lib.lock);
     return req;
 }
 
@@ -447,73 +482,102 @@ void pause_core(int core_id)
     memset(cmd_list, -1, sizeof(cmd_list));
     cmd_list[core_id] = MEM_PAUSE;
 
-    pim_req_handle_t *req = pim_submit(NULL, cmd_list);
+    // create a fake user to pass in pim_submit, since 
+    // pim_submit needs to check if user owns the core and 
+    // update core_mode.
+    pim_user_t fake_user;
+    fake_user.user_id = -1; // tell pim_submit this is a fake user
+    pim_req_handle_t *req = pim_submit(&fake_user, cmd_list);
     if (!req) {
         fprintf(stderr, "pause_core: failed to submit pause for core %d\n", core_id);
         return;
     }
 
-    pthread_mutex_lock(&lib.lock);
-    flush_pending_locked();
-    pthread_mutex_unlock(&lib.lock);
+    // pthread_mutex_lock(&lib.lock);
+    // flush_pending_locked();
+    // pthread_mutex_unlock(&lib.lock);
 
     if (pim_wait(req, -1) != 0) {
         fprintf(stderr, "pause_core: failed to wait for pause completion on core %d\n", core_id);
     }
     pim_req_free(req);
 
-    gettimeofday(&lib.last_pause[core_id], NULL); 
+    // no need to update lib.timing[i].last_pause or is_penalty since flush_pending will update it
 }
 
 void resume_core(int core_id)
 /* Internal: sends MEM_RESUME to core_id and waits for ack. Called by bg_check_loop only
  * when CPU has overstayed resume_watermark. Updates last_resume and sets is_penalty. */
-{
-    char cmd_list[MAX_PIM_UNIT];
+
+ 
+{   char cmd_list[MAX_PIM_UNIT];
     memset(cmd_list, -1, sizeof(cmd_list));
     cmd_list[core_id] = MEM_RESUME;
 
-    pim_req_handle_t *req = pim_submit(NULL, cmd_list);
+    // create a fake user to pass in pim_submit, since 
+    // pim_submit needs to check if user owns the core and 
+    // update core_mode.
+    pim_user_t fake_user;
+    fake_user.user_id = -1; // tell pim_submit this is a fake user
+    pim_req_handle_t *req = pim_submit(&fake_user, cmd_list);
     if (!req) {
         fprintf(stderr, "resume_core: failed to submit resume for core %d\n", core_id);
         return;
     }
 
-    pthread_mutex_lock(&lib.lock);
-    flush_pending_locked();
-    pthread_mutex_unlock(&lib.lock);
+    // pthread_mutex_lock(&lib.lock);
+    // flush_pending_locked();
+    // pthread_mutex_unlock(&lib.lock);
 
     if (pim_wait(req, -1) != 0) {
         fprintf(stderr, "resume_core: failed to wait for resume completion on core %d\n", core_id);
     }
     pim_req_free(req);
-
-    gettimeofday(&lib.last_resume[core_id], NULL);
+    // no need to update lib.timing[i].last_resume or is_penalty since flush_pending will update it
 }
 
 
-static inline enum rw_state_t check(int core_id) 
-{
+// static inline enum rw_state_t check(int core_id) 
+// {
+//     struct timeval now;
+//     gettimeofday(&now, NULL);
+//     long time_since_last_pause = (now.tv_sec - lib.last_pause[core_id].tv_sec) * 1000L +
+//                                 (now.tv_usec - lib.last_pause[core_id].tv_usec) / 1000L;
+//     long time_since_last_resume = (now.tv_sec - lib.last_resume[core_id].tv_sec) * 1000L +
+//                            (now.tv_usec - lib.last_resume[core_id].tv_usec) / 1000L;
+    
+//     if (lib.is_penalty[core_id]) {
+//         // pim owned the core/memory chunk
+//         if (time_since_last_resume < lib.pause_penalty) {
+//             // try to access it within penalty time
+//                 return FAIL;
+//         }
+//     } else {
+//         // cpu owned the core/memory chunk
+//         if (time_since_last_pause > lib.resume_watermark) {
+//             resume_core(core_id);
+//             return FAIL;
+//         }
+//     }
+//     return SUCC;
+// }
+
+
+static inline enum rw_state_t check(int core_id) {
+    int idx = atomic_load(&lib.timing_idx);        /* grab active buffer once */
+    struct pim_timing *t = &lib.timing[idx];       /* all reads come from here */
+
     struct timeval now;
     gettimeofday(&now, NULL);
-    long time_since_last_pause = (now.tv_sec - lib.last_pause[core_id].tv_sec) * 1000L +
-                                (now.tv_usec - lib.last_pause[core_id].tv_usec) / 1000L;
-    long time_since_last_resume = (now.tv_sec - lib.last_resume[core_id].tv_sec) * 1000L +
-                           (now.tv_usec - lib.last_resume[core_id].tv_usec) / 1000L;
-    
-    if (lib.is_penalty[core_id]) {
-        // pim owned the core/memory chunk
-        if (time_since_last_resume < lib.pause_penalty) {
-            // try to access it within penalty time
-                return FAIL;
-        }
-    } else {
-        // cpu owned the core/memory chunk
-        if (time_since_last_pause > lib.resume_watermark) {
-            resume_core(core_id);
-            return FAIL;
-        }
-    }
+    long time_since_pause  = (now.tv_sec - t->last_pause[core_id].tv_sec)  * 1000L
+                      + (now.tv_usec - t->last_pause[core_id].tv_usec) / 1000L;
+    long time_since_resume = (now.tv_sec - t->last_resume[core_id].tv_sec) * 1000L
+                      + (now.tv_usec - t->last_resume[core_id].tv_usec) / 1000L;
+
+    if (t->is_penalty[core_id] && time_since_resume < lib.pause_penalty)   return FAIL;
+    if (!t->is_penalty[core_id] && time_since_pause > lib.resume_watermark) return FAIL;
+    // use the background check thread to trigger resume if CPU overstays, 
+    // so no need to do it here in check() which is on the critical path of read/write
     return SUCC;
 }
 
@@ -539,11 +603,8 @@ struct rw_ret write_64(struct pim_user *user, void *addr, uint64_t val) {
     return (struct rw_ret){ .state = SUCC, .data = 0 };
 }
 
-static void flush_pending_locked(void)
-/* flush all the pending requests to the kernel*/
-{
-    if (lib.pending.count == 0)
-        return;
+static void flush_pending(void) {
+
 
     int efd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     if (efd < 0) {
@@ -556,6 +617,16 @@ static void flush_pending_locked(void)
         close(efd);
         return;
     }
+
+    pthread_mutex_lock(&lib.lock);
+
+    if (lib.pending.count == 0) {
+        pthread_mutex_unlock(&lib.lock);
+        close(efd);
+        free(bt);
+        return;
+    }
+
     bt->efd      = efd;
     bt->req_head = lib.pending.head;
     bt->next     = lib.inflight;
@@ -573,25 +644,39 @@ static void flush_pending_locked(void)
     if (ioctl(lib.dev_fd, IOCTL_MAGIC, &kreq) < 0)
         perror("pim flush: ioctl");
 
-    // update the last pause/resume time and penalty state for each core according to the command list
-    // might not be too accurate since this is not the point it start execution,
-    // we cannot guarantee the order of command execution for different cores in the kernel, 
-    // but it still probably be good for our current design
-    for (int i = 0; i < MAX_PIM_UNIT; i++) {
-        if (lib.pending.cmd_list[i] == MEM_PAUSE) {
-            gettimeofday(&lib.last_pause[i], NULL);
-            lib.is_penalty[i] = false;
-        } else if (lib.pending.cmd_list[i] == MEM_RESUME) {
-            gettimeofday(&lib.last_resume[i], NULL);
-            lib.is_penalty[i] = true;
-    }
-}
-
-    memset(lib.pending.cmd_list, -1, sizeof(lib.pending.cmd_list));
+    /* snapshot cmd_list and clear pending while still under lock */
+    char snapshot[MAX_PIM_UNIT];
+    memcpy(snapshot, lib.pending.cmd_list, MAX_PIM_UNIT);
+    memset(lib.pending.cmd_list, PIM_NOP, sizeof(lib.pending.cmd_list));
     lib.pending.count = 0;
     lib.pending.head  = NULL;
     lib.pending.tail  = NULL;
+
+    pthread_mutex_unlock(&lib.lock);
+
+    /* Phase 2 — lock-free: write new timing into the inactive buffer */
+    int old_idx = atomic_load(&lib.timing_idx);
+    int new_idx = 1 - old_idx;
+    lib.timing[new_idx] = lib.timing[old_idx];  /* copy old state as baseline */
+
+    struct timeval now;
+    gettimeofday(&now, NULL);
+    for (int i = 0; i < MAX_PIM_UNIT; i++) {
+        if (snapshot[i] == MEM_PAUSE) {
+            lib.timing[new_idx].last_pause[i]  = now;
+            lib.timing[new_idx].is_penalty[i]  = false; /* CPU now owns */
+        } else if (snapshot[i] == MEM_RESUME) {
+            lib.timing[new_idx].last_resume[i] = now;
+            lib.timing[new_idx].is_penalty[i]  = true;  /* PIM now owns */
+        }
+    }
+
+    /* Phase 3 — locked: swap the pointer so check() sees the new buffer */
+    pthread_mutex_lock(&lib.lock);
+    atomic_store(&lib.timing_idx, new_idx);
+    pthread_mutex_unlock(&lib.lock);
 }
+
 
 /*  Background  thread */
 
@@ -604,7 +689,8 @@ static void *bg_check_loop(void *arg)
     while (atomic_load(&lib.running)) {
         for (int i = 0; i < MAX_PIM_UNIT; i++) {
             if (lib.pfn2core_id[i] == -1) continue;
-            if (check(i) == FAIL && !lib.is_penalty[i])
+            int idx = atomic_load(&lib.timing_idx);
+            if (check(i) == FAIL && !lib.timing[idx].is_penalty[i])
                 resume_core(i);    // CPU overstayed, force resume
         }
         usleep(500);
@@ -647,19 +733,23 @@ static void *completer_loop(void *arg)
             free(bt);
         }
         // force to flush the pending request if the pending request has been waiting
-        //  for too long
+        //  for too long, or if the request count have reached the watermark
         pthread_mutex_lock(&lib.lock);
+        bool need_flush = false;
         if (lib.pending.count > 0) {
             struct timeval now;
             gettimeofday(&now, NULL);
             long elapsed_ms =
                 (now.tv_sec  - lib.pending.first_submit_ts.tv_sec)  * 1000L +
                 (now.tv_usec - lib.pending.first_submit_ts.tv_usec) / 1000L;
-            if (elapsed_ms >= lib.flush_timeout_ms)
-                flush_pending_locked();
+            if (elapsed_ms >= lib.flush_timeout_ms || lib.pending.count >= lib.watermark)
+                need_flush = true;
         }
         pthread_mutex_unlock(&lib.lock);
 
+        if (need_flush) {
+            flush_pending();
+        }
         usleep(500);
     }
 

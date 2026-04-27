@@ -38,6 +38,13 @@ struct pim_user {
     int   core2chunk[MAX_PIM_UNIT];     /* -1 when core not owned */
     bool  core_mode[MAX_PIM_UNIT];  /* false = HOST_OWNED */ // need to verify
 };
+
+struct pim_timing {
+    struct timeval last_pause [MAX_PIM_UNIT];
+    struct timeval last_resume[MAX_PIM_UNIT];
+    bool           is_penalty [MAX_PIM_UNIT]; /* 1: pim owned; 0: cpu owned */
+};
+
 /* Mirror of kernel ABI — must stay in sync with PIM_control_cmd.h */
 struct pim_req_t {
     int  event_fd;
@@ -101,7 +108,7 @@ typedef struct pim_req_handle pim_req_handle_t;
  * pool size is determined entirely by the driver's hard cap and chunk_size.
  */
 int  pim_lib_init(int watermark, int flush_timeout_ms, size_t chunk_size);
-void pim_lib_fini(void);
+int  pim_lib_fini(void); /* returns -1 (errno=EBUSY) if pending requests remain; call flush first */
 
 /*
  * Per-user registration.
@@ -169,7 +176,7 @@ void pim_req_free(pim_req_handle_t *req);
  * reads results from here (via pim_read) after PIM work is done.
  * Returns NULL if user does not own core_id.
  */
-void *pim_user_mem(pim_user_t *user, int core_id);
+// void *pim_user_mem(pim_user_t *user, int core_id);
 
 /*
  * Return the size in bytes of every core's chunk (= chunk_size passed to

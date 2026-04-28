@@ -6,24 +6,24 @@
 #include "bench.h"
 #include <stdlib.h>
 
-#define ARRAY_SIZE 1000000 // Tune for cache size
 
 void init_poly_eval(struct bench_t *this_bench, struct bench_arg_t args){
     this_bench->args = args;
-    size_t array_bytes = ARRAY_SIZE * sizeof(float);
+    size_t array_bytes = this_bench->args.obj_cnt0 * sizeof(float);
 
     this_bench->args.size0 = array_bytes; // X array
     this_bench->args.size1 = array_bytes; // Y array
 }
 
-void prepare_poly_eval(struct bench_t *this_bench){
+int prepare_poly_eval(struct bench_t *this_bench){
     this_bench->args.mem0 = calloc(1, this_bench->args.size0);
     this_bench->args.mem1 = calloc(1, this_bench->args.size1);
 
     float *X = (float*)this_bench->args.mem0;
-    for(size_t i = 0; i < ARRAY_SIZE; i++){
+    for(size_t i = 0; i < this_bench->args.obj_cnt0; i++){
         X[i] = (float)rand() / RAND_MAX; // Random input values
     }
+    return 0;
 }
 
 void calc_poly_eval(struct bench_t *this_bench) {
@@ -33,7 +33,7 @@ void calc_poly_eval(struct bench_t *this_bench) {
     // Coefficients for a random 5th degree polynomial
     float c5 = 2.5f, c4 = -1.2f, c3 = 3.4f, c2 = -0.5f, c1 = 1.1f, c0 = 4.0f;
 
-    for (int i = 0; i < ARRAY_SIZE; i++) {
+    for (size_t i = 0; i < this_bench->args.obj_cnt0; i++) {
         float x = X[i];
         
         // Horner's method for calculating: c5*x^5 + c4*x^4 + c3*x^3 + c2*x^2 + c1*x + c0

@@ -138,6 +138,18 @@ static void *user_task(void *arg)
             });
 #endif
 
+#if defined(POLY_EVAL_BENCH)
+
+#define ARRAY_SIZE 1000000 // Tune for cache size
+
+    run_bench(&poly_eval_bench, (struct bench_arg_t){
+            .obj_cnt0 = ARRAY_SIZE, // Number of terms in the polynomial
+            .obj_cnt1 = 0, // Not in use
+            .obj_cnt2 = 0, // Not in use
+            .config_const0 = 3.14159 // Point of evaluation
+            });
+#endif
+
 #endif
 
 done:

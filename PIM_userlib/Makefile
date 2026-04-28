@@ -9,7 +9,7 @@ CFLAGS = -Wall -Wextra -O3 -static
 TARGET = benchmark
 
 # Benchmark source files
-SRCS = main.c matmul_bench.c kmean_bench.c
+SRCS = main.c matmul_bench.c kmean_bench.c poly_eval.c
 OBJS = $(SRCS:.c=.o)
 
 # Default target

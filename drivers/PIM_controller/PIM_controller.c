@@ -1,7 +1,9 @@
 #include "asm-generic/errno-base.h"
 #include "linux/mm.h"
+#include "linux/timekeeping.h"
+#include "linux/util_macros.h"
 #include "linux/vmalloc.h"
-#include "linux/jiffies.h"
+#include "linux/ktime.h"
 #include "linux/printk.h"
 #include "linux/spinlock_types.h"
 #include <linux/module.h>
@@ -56,6 +58,7 @@ static void wthread_func(struct work_struct *work) {
 
     for(int i=0; i<MAX_PIM_UNIT; i++) {
         int sub_cmd = cmd.user_req.req_list[i];
+        u64 ts_ns = 0;
         switch(sub_cmd) {
             case PIM_NOP:
             {
@@ -63,22 +66,26 @@ static void wthread_func(struct work_struct *work) {
             }
             case PIM_START:
             {
-                pr_info(DRV_NAME " PIM_START @ %lld\n", get_jiffies_64());
+                ts_ns = ktime_get_ns();
+                pr_info(DRV_NAME ": PIM_START @ %lld\n", ts_ns);
                 break;
             }
             case MEM_PAUSE:
             {
-                pr_info(DRV_NAME " MEM_PAUSE @ %lld\n", get_jiffies_64());
+                ts_ns = ktime_get_ns();
+                pr_info(DRV_NAME ": MEM_PAUSE @ %lld\n", ts_ns);
                 break;
             }
             case MEM_RESUME:
             {
-                pr_info(DRV_NAME " MEM_RESUME @ %lld\n", get_jiffies_64());
+                ts_ns = ktime_get_ns();
+                pr_info(DRV_NAME ": MEM_RESUME @ %lld\n", ts_ns);
                 break;
             }
             case PIM_QUERY:
             {
-                pr_info(DRV_NAME " PIM_QUERY @ %lld\n", get_jiffies_64());
+                ts_ns = ktime_get_ns();
+                pr_info(DRV_NAME ": PIM_QUERY @ %lld\n", ts_ns);
                 break;
             }
             default:

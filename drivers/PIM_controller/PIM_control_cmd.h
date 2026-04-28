@@ -4,7 +4,7 @@
 #include <linux/ioctl.h>
 
 #define MAGIC 114514
-#define MY_IOCTL_ENQUEUE_CMD _IOW(MY_MAGIC, 1, int)
+#define MY_IOCTL_ENQUEUE_CMD _IOW(MAGIC, 1, int)
 
 #define PIM_NOP     0
 #define PIM_START   1

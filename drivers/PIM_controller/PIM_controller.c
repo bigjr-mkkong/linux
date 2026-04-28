@@ -63,33 +63,31 @@ static void wthread_func(struct work_struct *work) {
             }
             case PIM_START:
             {
-                pr_info(DRV_NAME "PIM_START @ %lld\n", get_jiffies_64());
-                eventfd_signal(cmd.ctx);
+                pr_info(DRV_NAME " PIM_START @ %lld\n", get_jiffies_64());
                 break;
             }
             case MEM_PAUSE:
             {
-                pr_info(DRV_NAME "MEM_PAUSE @ %lld\n", get_jiffies_64());
-                eventfd_signal(cmd.ctx);
+                pr_info(DRV_NAME " MEM_PAUSE @ %lld\n", get_jiffies_64());
                 break;
             }
             case MEM_RESUME:
             {
-                pr_info(DRV_NAME "MEM_RESUME @ %lld\n", get_jiffies_64());
-                eventfd_signal(cmd.ctx);
+                pr_info(DRV_NAME " MEM_RESUME @ %lld\n", get_jiffies_64());
                 break;
             }
             case PIM_QUERY:
             {
-                pr_info(DRV_NAME "PIM_QUERY @ %lld\n", get_jiffies_64());
-                eventfd_signal(cmd.ctx);
+                pr_info(DRV_NAME " PIM_QUERY @ %lld\n", get_jiffies_64());
                 break;
             }
             default:
-                pr_warn(DRV_NAME "Unidentified command for pim unit %d: %d\n", \
+                pr_warn(DRV_NAME " Unidentified command for pim unit %d: %d\n", \
                         i, sub_cmd);
         }
     }
+
+    eventfd_signal(cmd.ctx);
 
     eventfd_ctx_put(cmd.ctx);
 
@@ -142,14 +140,14 @@ static int pim_mmap(struct file *filp, struct vm_area_struct *vma) {
 
     vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
-    unsigned long pfn;
+    unsigned long pfn, offset = 0;
     void *vaddr = pim_mempool;
     while (size > 0) {
         pfn = vmalloc_to_pfn(vaddr);
-        if (remap_pfn_range(vma, vma->vm_start, pfn, PAGE_SIZE, vma->vm_page_prot)) {
+        if (remap_pfn_range(vma, vma->vm_start + offset, pfn, PAGE_SIZE, vma->vm_page_prot)) {
             return -EAGAIN;
         }
-        vma->vm_start += PAGE_SIZE;
+        offset += PAGE_SIZE;
         vaddr += PAGE_SIZE;
         size -= PAGE_SIZE;
         pim_mem_usage += PAGE_SIZE;

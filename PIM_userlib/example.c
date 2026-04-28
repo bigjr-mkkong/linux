@@ -5,6 +5,8 @@
 #include "pim_runtime.h"
 #include <unistd.h>
 
+#define BEGIN_BENCH
+
 /*
  * Simulates two independent user tasks each owning a disjoint set of PIM
  * cores and submitting commands concurrently. The library batches their
@@ -53,6 +55,7 @@ static void *user_task(void *arg)
 
     pim_req_free(req);
 
+#if defined(BEGIN_BENCH)
 
     void* begin = get_lib_base();
     struct rw_ret ret0;
@@ -68,7 +71,7 @@ static void *user_task(void *arg)
     /* Here is mem-intensive task */
 
     for(int i=0 ;i < avail_ptr; i++){
-        pause_core(avail_cores[i]);
+        pause_core(user, avail_cores[i]);
     }
 
     for(size_t i=0; i<16; i++) {
@@ -80,7 +83,7 @@ static void *user_task(void *arg)
     }
 
     for(int i=0; i<avail_ptr; i++){
-        resume_core(avail_cores[i]);
+        resume_core(user, avail_cores[i]);
     }
 
 
@@ -91,7 +94,7 @@ static void *user_task(void *arg)
         workhorse += 1.1919810;
     }
 
-
+#endif
 
 done:
     pim_free_cores(user);
@@ -102,7 +105,7 @@ done:
 int main(void)
 {
     /* Use a low watermark so the two-user demo flushes quickly */
-    if (pim_lib_init(2, 50, (1 << 12)) < 0) {
+    if (pim_lib_init((1 << 12)) < 0) {
         perror("pim_lib_init");
         return EXIT_FAILURE;
     }
@@ -112,10 +115,10 @@ int main(void)
 
     pthread_t ta, tb;
     pthread_create(&ta, NULL, user_task, &a);
-    pthread_create(&tb, NULL, user_task, &b);
+    /* pthread_create(&tb, NULL, user_task, &b); */
 
     pthread_join(ta, NULL);
-    pthread_join(tb, NULL);
+    /* pthread_join(tb, NULL); */
 
     pim_lib_fini();
     return EXIT_SUCCESS;

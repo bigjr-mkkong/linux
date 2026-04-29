@@ -23,33 +23,101 @@ int prepare_poly_eval(struct bench_t *this_bench){
     return 0;
 }
 
-void calc_poly_eval(struct bench_t *this_bench) {
+
+void calc_poly_eval_base(struct bench_t *this_bench) {
     float *X = (float*)this_bench->args.mem0;
     float *Y = (float*)this_bench->args.mem1;
+    int N = (int)this_bench->args.obj_cnt0;
 
-    
-
-    // Coefficients for a random 5th degree polynomial
     float c5 = 2.5f, c4 = -1.2f, c3 = 3.4f, c2 = -0.5f, c1 = 1.1f, c0 = 4.0f;
-    int core_id_x = this_bench->args.avail_cores[0]; // assume we only use core 0 for simplicity
-    int core_id_y = this_bench->args.avail_cores[1]; // assume we only use core 1 for simplicity
-    for (size_t i = 0; i < this_bench->args.obj_cnt0; i++) {
-        if (i % 16 == 0)
-            pause_core(this_bench->args.user, core_id_x);
+    int core_id_x = this_bench->args.avail_cores[0];
+    int core_id_y = this_bench->args.avail_cores[1];
 
-        float x = X[i];
+    int total_slots = (N + 15) / 16;
+    float X_cache[16];
+    float result_cache[16];
 
-        // Horner's method for calculating: c5*x^5 + c4*x^4 + c3*x^3 + c2*x^2 + c1*x + c0
-        // This creates a tight dependency chain of Multiply-Accumulate (MAC) operations
-        float result = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
+    // +2 to drain last two chunks through calc and write stages
+    for (int slot = 0; slot < total_slots + 2; slot++) {
+        int s_w = slot - 2;
+        int s_c = slot - 1;
+        int s_r = slot;
 
-        if (i % 16 == 0)
+        // Write stage (CPU mode): write result_cache to Y
+        if (s_w >= 0 && s_w < total_slots) {
+            int base_w = s_w * 16;
+            int count_w = (base_w + 16 <= N) ? 16 : N - base_w;
+            for (int j = 0; j < count_w; j++)
+                Y[base_w + j] = result_cache[j];
+        }
+
+        // Calc stage (PIM mode): compute from X_cache into result_cache
+        if (s_c >= 0 && s_c < total_slots) {
+            int base_c = s_c * 16;
+            int count_c = (base_c + 16 <= N) ? 16 : N - base_c;
+            for (int j = 0; j < count_c; j++) {
+                float x = X_cache[j];
+                result_cache[j] = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
+            }
+        }
+
+        // Read stage (CPU mode): load 16 X values into X_cache
+        if (s_r < total_slots) {
+            int base_r = s_r * 16;
+            int count_r = (base_r + 16 <= N) ? 16 : N - base_r;
+            for (int j = 0; j < count_r; j++)
+                X_cache[j] = X[base_r + j];
+        }
+    }
+}
+
+void calc_poly_eval_share(struct bench_t *this_bench) {
+    float *X = (float*)this_bench->args.mem0;
+    float *Y = (float*)this_bench->args.mem1;
+    int N = (int)this_bench->args.obj_cnt0;
+
+    float c5 = 2.5f, c4 = -1.2f, c3 = 3.4f, c2 = -0.5f, c1 = 1.1f, c0 = 4.0f;
+    int core_id_x = this_bench->args.avail_cores[0];
+    int core_id_y = this_bench->args.avail_cores[1];
+
+    int total_slots = (N + 15) / 16;
+    float X_cache[16];
+    float result_cache[16];
+
+    // +2 to drain last two chunks through calc and write stages
+    for (int slot = 0; slot < total_slots + 2; slot++) {
+        int s_w = slot - 2;
+        int s_c = slot - 1;
+        int s_r = slot;
+
+        // Write stage (CPU mode): write result_cache to Y
+        if (s_w >= 0 && s_w < total_slots) {
+            int base_w = s_w * 16;
+            int count_w = (base_w + 16 <= N) ? 16 : N - base_w;
             pause_core(this_bench->args.user, core_id_y);
-        Y[i] = result;
-
-        if (i % 16 == 15 || i == this_bench->args.obj_cnt0 - 1) {
-            resume_core(this_bench->args.user, core_id_x);
+            for (int j = 0; j < count_w; j++)
+                Y[base_w + j] = result_cache[j];
             resume_core(this_bench->args.user, core_id_y);
+        }
+
+        // Calc stage (PIM mode): compute from X_cache into result_cache
+        if (s_c >= 0 && s_c < total_slots) {
+            int base_c = s_c * 16;
+            int count_c = (base_c + 16 <= N) ? 16 : N - base_c;
+            for (int j = 0; j < count_c; j++) {
+                float x = X_cache[j];
+                result_cache[j] = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
+            }
+        }
+
+        // Read stage (CPU mode): load 16 X values into X_cache
+        if (s_r < total_slots) {
+            int base_r = s_r * 16;
+            int count_r = (base_r + 16 <= N) ? 16 : N - base_r;
+            pause_core(this_bench->args.user, core_id_x);
+            for (int j = 0; j < count_r; j++)
+                X_cache[j] = X[base_r + j];
+            resume_core(this_bench->args.user, core_id_x);
         }
     }
 }
@@ -64,7 +132,8 @@ struct bench_t poly_eval_bench\
    .args = (struct bench_arg_t){0},
    .init = init_poly_eval,
    .prepare = prepare_poly_eval,
-   .calc = calc_poly_eval,
+   .calc_base = calc_poly_eval_base,
+   .calc_share = calc_poly_eval_share,
    .clean = clean_poly_eval
 };
 

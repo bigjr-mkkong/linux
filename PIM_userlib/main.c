@@ -27,7 +27,8 @@ extern struct bench_t poly_eval_bench;
 void run_bench(struct bench_t *this_bench, struct bench_arg_t args){
     this_bench->init(this_bench, args);
     this_bench->prepare(this_bench);
-    this_bench->calc(this_bench);
+    this_bench->calc_base(this_bench);
+    this_bench->calc_share(this_bench);
     this_bench->clean(this_bench);
 
     return;
@@ -126,7 +127,7 @@ static void *user_task(void *arg)
         }
     } else if(btype == KMEAN_BENCH){
         printf("Running KMEAN_BENCH\n");
-#define NUM_POINTS 500000
+#define NUM_POINTS 1000
 #define K_CLUSTERS 32
         struct bench_arg_t kmean_args = {
         .obj_cnt0 = NUM_POINTS,\
@@ -146,7 +147,7 @@ static void *user_task(void *arg)
 
     } else if(btype == MATMUL_BENCH){
         printf("Running MATMUL_BENCH\n");
-#define MAT_N 1024
+#define MAT_N 128
 #define TILE_SIZE 32
 
         struct bench_arg_t matmul_args = {
@@ -162,7 +163,7 @@ static void *user_task(void *arg)
 
     } else if(btype == POLY_EVAL_BENCH){
         printf("Running POLY_EVAL_BENCH\n");
-#define ARRAY_SIZE 1000000 // Tune for cache size
+#define ARRAY_SIZE 10000 // Tune for cache size
         struct bench_arg_t poly_eval_args = {
         .obj_cnt0 = ARRAY_SIZE,\
                     .obj_cnt1 = 0,\ 

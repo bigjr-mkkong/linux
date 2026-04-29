@@ -203,8 +203,8 @@ int main()
     pthread_t ta, tb, tc, td;
 
     /* if(bench_run_id == 1){ */
-        /* pthread_create(&ta, NULL, user_task, &a); */
-        /* pthread_join(ta, NULL); */
+        pthread_create(&ta, NULL, user_task, &a);
+        pthread_join(ta, NULL);
     /* } else if(bench_run_id == 2){ */
         pthread_create(&tb, NULL, user_task, &b);
         pthread_join(tb, NULL);

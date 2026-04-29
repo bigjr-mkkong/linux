@@ -1,5 +1,6 @@
 #include "bench.h"
 #include "stdlib.h"
+#include <complex.h>
 
 typedef struct {
     float x, y, z;
@@ -52,7 +53,7 @@ int prepare_kmean(struct bench_t *this_bench){
 /*
  * Main body for benchmark
  */
-void calc_kmeans(struct bench_t *this_bench) {
+void calc_kmeans_base(struct bench_t *this_bench) {
     /* Setup kmean variables */
     Point3D *points = (Point3D*)(this_bench->args.mem0);
     Point3D *centroids = (Point3D*)(this_bench->args.mem1);
@@ -61,38 +62,77 @@ void calc_kmeans(struct bench_t *this_bench) {
     int NUM_POINTS = this_bench->args.obj_cnt0;
     int K_CLUSTERS = this_bench->args.obj_cnt1;
 
-    int core_id_p = this_bench->args.avail_cores[0]; 
-    int core_id_c = this_bench->args.avail_cores[1]; 
-
     for (int p = 0; p < NUM_POINTS; p++) {
         float min_dist = 1e9;
         int best_cluster = 0;
-        
+
         for (int c = 0; c < K_CLUSTERS; c++) {
-            if (c % 16 == 0) {
-                pause_core(this_bench->args.user, core_id_c);
-                pause_core(this_bench->args.user, core_id_p);
-            }
             float dx = points[p].x - centroids[c].x;
             float dy = points[p].y - centroids[c].y;
             float dz = points[p].z - centroids[c].z;
-            
+
             float dist = (dx * dx) + (dy * dy) + (dz * dz);
-            
+
             if (dist < min_dist) {
                 min_dist = dist;
                 best_cluster = c;
-            }
-
-            if (c % 16 == 15 || c == K_CLUSTERS - 1) {
-                resume_core(this_bench->args.user, core_id_c);
-                resume_core(this_bench->args.user, core_id_p);
             }
         }
         labels[p] = best_cluster;
     }
 }
 
+void calc_kmeans_share(struct bench_t *this_bench) {
+    /* Setup kmean variables */
+    Point3D *points = (Point3D*)(this_bench->args.mem0);
+    Point3D *centroids = (Point3D*)(this_bench->args.mem1);
+    int *labels = (int*)(this_bench->args.mem2);
+
+    int NUM_POINTS = this_bench->args.obj_cnt0;
+    int K_CLUSTERS = this_bench->args.obj_cnt1;
+
+    Point3D p_cache;
+    Point3D cent_cache[K_CLUSTERS]; 
+
+    int label_cache;
+
+    int mode = 0;//0: read, 1: calc, 2: write
+
+    for (int p = 0; p < NUM_POINTS; p++) {
+        float min_dist = 1e9;
+        int best_cluster = 0;
+
+
+        if(mode == 0){
+            //pause
+            p_cache = points[p];
+            for(int j = 0; j < K_CLUSTERS; j++) {
+                cent_cache[j] = centroids[j];
+            }
+            //resume
+        } else if(mode == 1){
+            for (int c = 0; c < K_CLUSTERS; c++) {
+                float dx = p_cache.x - cent_cache[c].x;
+                float dy = p_cache.y - cent_cache[c].y;
+                float dz = p_cache.z - cent_cache[c].z;
+
+                float dist = (dx * dx) + (dy * dy) + (dz * dz);
+
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    best_cluster = c;
+                    label_cache = best_cluster;
+                }
+            }
+        } else {
+            //pause
+            labels[p] = label_cache;
+            //resume
+        }
+    
+        mode = (mode + 1) % 3;
+    }
+}
 
 /* 
  * Clean up for benchmark
@@ -110,6 +150,7 @@ struct bench_t kmean_bench \
    .args = (struct bench_arg_t){0},
    .init = init_kmean,
    .prepare = prepare_kmean,
-   .calc = calc_kmeans,
+   .calc_share = calc_kmeans_share,
+   .calc_base = calc_kmeans_base,
    .clean = clean_kmean
 };

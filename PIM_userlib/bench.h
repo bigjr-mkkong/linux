@@ -22,7 +22,8 @@ struct bench_t{
     struct bench_arg_t args;
     void (*init)(struct bench_t *this_bench, struct bench_arg_t args);
     int (*prepare)(struct bench_t *this_bench);
-    void (*calc)(struct bench_t *this_bench);
+    void (*calc_base)(struct bench_t *this_bench);
+    void (*calc_share)(struct bench_t *this_bench);
     void (*clean)(struct bench_t *this_bench);
 };
 

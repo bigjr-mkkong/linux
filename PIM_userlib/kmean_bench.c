@@ -3,6 +3,8 @@
 #include <complex.h>
 #include "stdio.h"
 
+#define POINT_BATCH 16
+
 typedef struct {
     float x, y, z;
 } Point3D;
@@ -102,9 +104,11 @@ void calc_kmeans_share(struct bench_t *this_bench) {
     int core_id_c = this_bench->args.avail_cores[1];
     int core_id_l = this_bench->args.avail_cores[2];
 
-    Point3D p_cache;
+    int num_batches = (NUM_POINTS + POINT_BATCH - 1) / POINT_BATCH;
+
+    Point3D p_cache[POINT_BATCH];
     Point3D cent_cache[K_CLUSTERS];
-    int label_cache = 0;
+    int label_cache[POINT_BATCH];
 
     struct timespec begin, end;
     long long elapsed_ns;
@@ -115,32 +119,41 @@ void calc_kmeans_share(struct bench_t *this_bench) {
         int p_c = slot - 1;  // point being computed
         int p_r = slot;      // point being read
 
-        // Write stage (CPU mode): write label computed two slots ago
-        if (p_w >= 0 && p_w < NUM_POINTS) {
+        // Write stage (CPU mode): write labels computed two slots ago
+        if (b_w >= 0 && b_w < num_batches) {
+            int base = b_w * POINT_BATCH;
+            int count = (base + POINT_BATCH <= NUM_POINTS) ? POINT_BATCH : NUM_POINTS - base;
             pause_core(this_bench->args.user, core_id_l);
-            labels[p_w] = label_cache;
+            for (int j = 0; j < count; j++)
+                labels[base + j] = label_cache[j];
             resume_core(this_bench->args.user, core_id_l);
         }
 
-        // Calc stage (PIM mode): compute from cache loaded last slot
-        if (p_c >= 0 && p_c < NUM_POINTS) {
-            float min_dist = 1e9;
-            int best_cluster = 0;
-            for (int c = 0; c < K_CLUSTERS; c++) {
-                float dx = p_cache.x - cent_cache[c].x;
-                float dy = p_cache.y - cent_cache[c].y;
-                float dz = p_cache.z - cent_cache[c].z;
-                float dist = dx*dx + dy*dy + dz*dz;
-                if (dist < min_dist) {
-                    min_dist = dist;
-                    best_cluster = c;
+        // Calc stage (PIM mode): compute distances for the cached batch
+        if (b_c >= 0 && b_c < num_batches) {
+            int base = b_c * POINT_BATCH;
+            int count = (base + POINT_BATCH <= NUM_POINTS) ? POINT_BATCH : NUM_POINTS - base;
+            for (int p = 0; p < count; p++) {
+                float min_dist = 1e9;
+                int best_cluster = 0;
+                for (int c = 0; c < K_CLUSTERS; c++) {
+                    float dx = p_cache[p].x - cent_cache[c].x;
+                    float dy = p_cache[p].y - cent_cache[c].y;
+                    float dz = p_cache[p].z - cent_cache[c].z;
+                    float dist = dx*dx + dy*dy + dz*dz;
+                    if (dist < min_dist) {
+                        min_dist = dist;
+                        best_cluster = c;
+                    }
                 }
+                label_cache[p] = best_cluster;
             }
-            label_cache = best_cluster;
         }
 
-        // Read stage (CPU mode): load next point and all centroids into cache
-        if (p_r < NUM_POINTS) {
+        // Read stage (CPU mode): load next batch of points and all centroids
+        if (b_r < num_batches) {
+            int base = b_r * POINT_BATCH;
+            int count = (base + POINT_BATCH <= NUM_POINTS) ? POINT_BATCH : NUM_POINTS - base;
             pause_core(this_bench->args.user, core_id_p);
             /* pause_core(this_bench->args.user, core_id_c); */
             p_cache = points[p_r];

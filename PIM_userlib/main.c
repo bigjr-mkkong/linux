@@ -155,7 +155,7 @@ static void *user_task(void *arg)
     } else if(btype == MATMUL_BENCH){
         printf("Running MATMUL_BENCH\n");
 #define MAT_N 128
-#define TILE_SIZE 32
+#define TILE_SIZE 64
 
         struct bench_arg_t matmul_args = {
         .obj_cnt0 = MAT_N,\

@@ -85,6 +85,7 @@ int pim_lib_init(size_t chunk_size) {
 
     long page_size = sysconf(_SC_PAGE_SIZE);
     if (page_size <= 0 || chunk_size == 0 || (chunk_size % (size_t)page_size != 0)) {
+        fprintf(stderr, "pagesz wrong\n");
         errno = EINVAL;
         return -1;
     }
@@ -92,6 +93,7 @@ int pim_lib_init(size_t chunk_size) {
     lib.total_pool = (size_t)PIM_MEM_MAX_PAGES * (size_t)page_size;
     int num_chunks = (int)(lib.total_pool / chunk_size);
     if (num_chunks == 0) {
+        fprintf(stderr, "num_chunks wrong\n");
         errno = EINVAL;
         return -1;
     }
@@ -553,6 +555,7 @@ static void *bg_check_loop(void *arg) {
             if (!u->core_mode[i]) {
                 int idx = atomic_load(&lib.timing_idx);
                 if (check(i) == FAIL && !lib.timing[idx].is_penalty[i]) {
+                    printf("Watchdog awakend\n");
                     resume_core(u, i);
                 }
             }

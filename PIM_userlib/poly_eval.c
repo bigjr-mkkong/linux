@@ -1,8 +1,3 @@
-/*
- * TODO
- * Rewrite following function into benchmark style
- */
-
 #include "bench.h"
 #include <stdlib.h>
 
@@ -35,12 +30,14 @@ void calc_poly_eval(struct bench_t *this_bench) {
 
     for (size_t i = 0; i < this_bench->args.obj_cnt0; i++) {
         float x = X[i];
+        //_ = pause_core(..)
         
-        // Horner's method for calculating: c5*x^5 + c4*x^4 + c3*x^3 + c2*x^2 + c1*x + c0
-        // This creates a tight dependency chain of Multiply-Accumulate (MAC) operations
+
         float result = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
-        
+
+
         Y[i] = result;
+        //_ = resume_core(..)
     }
 }
 

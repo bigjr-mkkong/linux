@@ -1,5 +1,5 @@
 # Uncomment the prefix below if cross-compiling for a RISC-V simulator
-# PREFIX = riscv64-linux-gnu-
+PREFIX = riscv64-linux-gnu-
 CC     = gcc
 CFLAGS = -Wall -Wextra -O3 -static
 

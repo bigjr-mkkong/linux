@@ -8,12 +8,21 @@
 #include "time.h"
 
 #define BEGIN_BENCH
-#define MINI_BENCH
-#define KMEAN_BENCH
-#define MATMUL_BENCH
+/* #define MINI_BENCH */
+/* #define KMEAN_BENCH */
+/* #define MATMUL_BENCH */
+/* #define POLY_EVAL_BENCH */
+
+enum BenchTyp{
+    MINI_BENCH,
+    KMEAN_BENCH,
+    MATMUL_BENCH,
+    POLY_EVAL_BENCH
+};
 
 extern struct bench_t kmean_bench;
 extern struct bench_t matmul_bench;
+extern struct bench_t poly_eval_bench;
 
 void run_bench(struct bench_t *this_bench, struct bench_arg_t args){
     this_bench->init(this_bench, args);
@@ -33,6 +42,7 @@ void run_bench(struct bench_t *this_bench, struct bench_arg_t args){
 
 struct task_args {
     int task_id;
+    enum BenchTyp b_type;
     int core_ids[4];
 };
 
@@ -52,25 +62,25 @@ static void *user_task(void *arg)
            a->task_id,
            a->core_ids[0], a->core_ids[1], a->core_ids[2], a->core_ids[3]);
 
-    /* Build a cmd_list targeting only owned cores */
-    char cmd_list[MAX_PIM_UNIT];
-    memset(cmd_list, PIM_NOP, sizeof(cmd_list));
-    for (int i = 0; i < 4; i++)
-        cmd_list[a->core_ids[i]] = PIM_START;
+    /* /1* Build a cmd_list targeting only owned cores *1/ */
+    /* char cmd_list[MAX_PIM_UNIT]; */
+    /* memset(cmd_list, PIM_NOP, sizeof(cmd_list)); */
+    /* for (int i = 0; i < 4; i++) */
+    /*     cmd_list[a->core_ids[i]] = PIM_START; */
 
-    pim_req_handle_t *req = pim_submit(user, cmd_list);
-    if (!req) { perror("pim_submit"); goto done; }
+    /* pim_req_handle_t *req = pim_submit(user, cmd_list); */
+    /* if (!req) { perror("pim_submit"); goto done; } */
 
-    printf("Task %d: submitted PIM_START, waiting...\n", a->task_id);
+    /* printf("Task %d: submitted PIM_START, waiting...\n", a->task_id); */
 
-    /* Block until the kernel acks (up to 2 seconds) */
-    if (pim_wait(req, 2000) < 0) {
-        perror("pim_wait");
-    } else {
-        printf("Task %d: PIM_START completed\n", a->task_id);
-    }
+    /* /1* Block until the kernel acks (up to 2 seconds) *1/ */
+    /* if (pim_wait(req, 2000) < 0) { */
+    /*     perror("pim_wait"); */
+    /* } else { */
+    /*     printf("Task %d: PIM_START completed\n", a->task_id); */
+    /* } */
 
-    pim_req_free(req);
+    /* pim_req_free(req); */
 
 #if defined(BEGIN_BENCH)
 
@@ -87,46 +97,45 @@ static void *user_task(void *arg)
     /*actual workload begin*/
     /* Here is mem-intensive task */
 
-#if defined(MINI_BENCH)
-    for(int i=0 ;i < avail_ptr; i++){
-        pause_core(user, avail_cores[i]);
-    }
+    enum BenchTyp btype = ((struct task_args*)arg)->b_type;
 
-    for(size_t i=0; i<16; i++) {
-        ret0 = read_64(user, begin + avail_cores[0] * (1<<12) + sizeof(uint64_t) * i);
-        if(ret0.state != SUCC){
-            fprintf(stderr, "Failed to read from core %d offset %ld\n", avail_cores[0], i);
-            goto done;
+    if(btype == MINI_BENCH){
+        printf("Running MINI_BENCH\n");
+        for(int i=0 ;i < avail_ptr; i++){
+            pause_core(user, avail_cores[i]);
         }
-    }
 
-    for(int i=0; i<avail_ptr; i++){
-        resume_core(user, avail_cores[i]);
-    }
+        for(size_t i=0; i<16; i++) {
+            ret0 = read_64(user, begin + avail_cores[0] * (1<<12) + sizeof(uint64_t) * i);
+            if(ret0.state != SUCC){
+                fprintf(stderr, "Failed to read from core %d offset %ld\n", avail_cores[0], i);
+                goto done;
+            }
+        }
+
+        for(int i=0; i<avail_ptr; i++){
+            resume_core(user, avail_cores[i]);
+        }
 
 
-    /* Here is CPU intensive work */
-    volatile double workhorse = 1.0001;
-    for(int i=0; i<16; i++){
-        workhorse *= 1.14514;
-        workhorse += 1.1919810;
-    }
-#endif
-
-#if defined(KMEAN_BENCH)
-
+        /* Here is CPU intensive work */
+        volatile double workhorse = 1.0001;
+        for(int i=0; i<16; i++){
+            workhorse *= 1.14514;
+            workhorse += 1.1919810;
+        }
+    } else if(btype == KMEAN_BENCH){
+        printf("Running KMEAN_BENCH\n");
 #define NUM_POINTS 500000
 #define K_CLUSTERS 32
+        run_bench(&kmean_bench, (struct bench_arg_t){\
+                .obj_cnt0 = NUM_POINTS,\
+                .obj_cnt1 = K_CLUSTERS,\
+                .obj_cnt2 = NUM_POINTS\
+                });
 
-    run_bench(&kmean_bench, (struct bench_arg_t){\
-            .obj_cnt0 = NUM_POINTS,\
-            .obj_cnt1 = K_CLUSTERS,\
-            .obj_cnt2 = NUM_POINTS\
-            });
-#endif
-
-#if defined(MATMUL_BENCH)
-
+    } else if(btype == MATMUL_BENCH){
+        printf("Running MATMUL_BENCH\n");
 #define MAT_N 1024
 #define TILE_SIZE 32
 
@@ -136,19 +145,84 @@ static void *user_task(void *arg)
             .obj_cnt2 = 0,// Not in use
             .config_const0 = TILE_SIZE
             });
-#endif
-
-#if defined(POLY_EVAL_BENCH)
-
+    } else if(btype == POLY_EVAL_BENCH){
+        printf("Running POLY_EVAL_BENCH\n");
 #define ARRAY_SIZE 1000000 // Tune for cache size
 
     run_bench(&poly_eval_bench, (struct bench_arg_t){
             .obj_cnt0 = ARRAY_SIZE, // Number of terms in the polynomial
             .obj_cnt1 = 0, // Not in use
             .obj_cnt2 = 0, // Not in use
-            .config_const0 = 3.14159 // Point of evaluation
+            .config_const0 = 0 // Not in use
             });
-#endif
+    } else {
+        fprintf(stderr, "Unrecognizable bench type %d\n", btype);
+    }
+/* #if defined(MINI_BENCH) */
+/*     for(int i=0 ;i < avail_ptr; i++){ */
+/*         pause_core(user, avail_cores[i]); */
+/*     } */
+
+/*     for(size_t i=0; i<16; i++) { */
+/*         ret0 = read_64(user, begin + avail_cores[0] * (1<<12) + sizeof(uint64_t) * i); */
+/*         if(ret0.state != SUCC){ */
+/*             fprintf(stderr, "Failed to read from core %d offset %ld\n", avail_cores[0], i); */
+/*             goto done; */
+/*         } */
+/*     } */
+
+/*     for(int i=0; i<avail_ptr; i++){ */
+/*         resume_core(user, avail_cores[i]); */
+/*     } */
+
+
+/*     /1* Here is CPU intensive work *1/ */
+/*     volatile double workhorse = 1.0001; */
+/*     for(int i=0; i<16; i++){ */
+/*         workhorse *= 1.14514; */
+/*         workhorse += 1.1919810; */
+/*     } */
+/* #endif */
+
+/* #if defined(KMEAN_BENCH) */
+
+/* #define NUM_POINTS 500000 */
+/* #define K_CLUSTERS 32 */
+
+/*     run_bench(&kmean_bench, (struct bench_arg_t){\ */
+/*             .obj_cnt0 = NUM_POINTS,\ */
+/*             .obj_cnt1 = K_CLUSTERS,\ */
+/*             .obj_cnt2 = NUM_POINTS\ */
+/*             }); */
+/* #endif */
+
+
+/* #if defined(MATMUL_BENCH) */
+
+/* #define MAT_N 1024 */
+/* #define TILE_SIZE 32 */
+
+/*     run_bench(&matmul_bench, (struct bench_arg_t){ */
+/*             .obj_cnt0 = MAT_N, */
+/*             .obj_cnt1 = 0, //Not in use */
+/*             .obj_cnt2 = 0,// Not in use */
+/*             .config_const0 = TILE_SIZE */
+/*             }); */
+/* #endif */
+
+
+
+/* #if defined(POLY_EVAL_BENCH) */
+
+/* #define ARRAY_SIZE 1000000 // Tune for cache size */
+
+/*     run_bench(&poly_eval_bench, (struct bench_arg_t){ */
+/*             .obj_cnt0 = ARRAY_SIZE, // Number of terms in the polynomial */
+/*             .obj_cnt1 = 0, // Not in use */
+/*             .obj_cnt2 = 0, // Not in use */
+/*             .config_const0 = 0 // Not in use */
+/*             }); */
+/* #endif */
 
 #endif
 
@@ -158,8 +232,9 @@ done:
     return NULL;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    /* int bench_run_id = atoi(argv[1]); */
     srand(time(NULL));
     /* Use a low watermark so the two-user demo flushes quickly */
     if (pim_lib_init((1 << 12)) < 0) {
@@ -168,15 +243,28 @@ int main(void)
     }
 
     //Lets do single threaded test for class project due tomorrow reason :(
-    struct task_args a = { .task_id = 0, .core_ids = {0, 1, 2, 3} };
-    /* struct task_args b = { .task_id = 1, .core_ids = {4, 5, 6, 7} }; */
+    struct task_args a = { .task_id = 0, .b_type = MINI_BENCH, .core_ids = {0, 1, 2, 3} };
+    struct task_args b = { .task_id = 1, .b_type = KMEAN_BENCH, .core_ids = {4, 5, 6, 7} };
+    struct task_args c = { .task_id = 2, .b_type = MATMUL_BENCH, .core_ids = {8, 9, 10, 11} };
+    struct task_args d = { .task_id = 3, .b_type = POLY_EVAL_BENCH, .core_ids = {12, 13, 14, 15} };
 
-    pthread_t ta, tb;
-    pthread_create(&ta, NULL, user_task, &a);
-    /* pthread_create(&tb, NULL, user_task, &b); */
+    pthread_t ta, tb, tc, td;
 
-    pthread_join(ta, NULL);
-    /* pthread_join(tb, NULL); */
+    /* if(bench_run_id == 1){ */
+        pthread_create(&ta, NULL, user_task, &a);
+        pthread_join(ta, NULL);
+    /* } else if(bench_run_id == 2){ */
+        pthread_create(&tb, NULL, user_task, &b);
+        pthread_join(tb, NULL);
+    /* } else if(bench_run_id == 4){ */
+        pthread_create(&td, NULL, user_task, &d);
+        pthread_join(td, NULL);
+    /* } else if(bench_run_id == 3){ */
+        pthread_create(&tc, NULL, user_task, &c);
+        pthread_join(tc, NULL);
+    /* } else { */
+        /* fprintf(stderr, "bench run id %d DNE\n", bench_run_id); */
+    /* } */
 
     pim_lib_fini();
     return EXIT_SUCCESS;

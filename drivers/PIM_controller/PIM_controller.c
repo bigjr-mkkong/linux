@@ -22,6 +22,8 @@
 #define FIFO_MAX_ELEMENTS 1024
 #define PIM_MAX_MEM     (64 * PAGE_SIZE)
 
+#define MAX_TRACE_ENTRIES 100000
+
 /*
  * How to use it:
  * Only one user thread can call ioctl()
@@ -34,6 +36,30 @@ struct fifo_elem_t{
     struct eventfd_ctx *ctx;
 };
 
+struct pim_trace_entry {
+    uint64_t timestamp_ns;
+    int core_id;
+    char cmd;
+};
+
+static struct pim_trace_entry trace_buffer[MAX_TRACE_ENTRIES];
+static int trace_idx = 0;
+
+/* Fast, lock-free function to record a timestamp */
+static inline void record_trace(int core_id, char cmd) {
+    /* Just use a standard post-increment */
+    int idx = trace_idx++;
+
+    if (idx < MAX_TRACE_ENTRIES) {
+        trace_buffer[idx].timestamp_ns = ktime_get_ns();
+        trace_buffer[idx].core_id = core_id;
+        trace_buffer[idx].cmd = cmd;
+    } else {
+        /* Prevent overflow if we hit the limit */
+        trace_idx = MAX_TRACE_ENTRIES;
+    }
+}
+
 static struct kfifo req_fifo;
 static DEFINE_SPINLOCK(req_fifo_lock);
 
@@ -45,8 +71,6 @@ static size_t pim_mem_usage;
 
 static void wthread_func(struct work_struct *work) {
     struct fifo_elem_t cmd;
-
-    // I need to replace all kfifo in/out with spinlock version
 
     while(true){
 
@@ -61,7 +85,6 @@ static void wthread_func(struct work_struct *work) {
 
         for(int i=0; i<MAX_PIM_UNIT; i++) {
             int sub_cmd = cmd.user_req.req_list[i];
-            u64 ts_ns = 0;
             switch(sub_cmd) {
                 case PIM_NOP:
                 {
@@ -69,26 +92,26 @@ static void wthread_func(struct work_struct *work) {
                 }
                 case PIM_START:
                 {
-                    ts_ns = ktime_get_ns();
-                    pr_info(DRV_NAME ": PIM_START @ %lld\n", ts_ns);
+                    record_trace(i, PIM_START);
+                    /* pr_info(DRV_NAME ": PIM_START @ %lld\n", ts_ns); */
                     break;
                 }
                 case MEM_PAUSE:
                 {
-                    ts_ns = ktime_get_ns();
-                    pr_info(DRV_NAME ": MEM_PAUSE @ %lld\n", ts_ns);
+                    record_trace(i, MEM_PAUSE);
+                    /* pr_info(DRV_NAME ": MEM_PAUSE @ %lld\n", ts_ns); */
                     break;
                 }
                 case MEM_RESUME:
                 {
-                    ts_ns = ktime_get_ns();
-                    pr_info(DRV_NAME ": MEM_RESUME @ %lld\n", ts_ns);
+                    record_trace(i, MEM_RESUME);
+                    /* pr_info(DRV_NAME ": MEM_RESUME @ %lld\n", ts_ns); */
                     break;
                 }
                 case PIM_QUERY:
                 {
-                    ts_ns = ktime_get_ns();
-                    pr_info(DRV_NAME ": PIM_QUERY @ %lld\n", ts_ns);
+                    record_trace(i, PIM_QUERY);
+                    /* pr_info(DRV_NAME ": PIM_QUERY @ %lld\n", ts_ns); */
                     break;
                 }
                 default:
@@ -104,6 +127,35 @@ static void wthread_func(struct work_struct *work) {
     }
 
     return;
+}
+
+static ssize_t pim_read(struct file *file, char __user *buf, size_t count, loff_t *ppos) {
+    int max_entries = trace_idx;
+    size_t available_bytes;
+
+    /* Cap at max entries to prevent out-of-bounds */
+    if (max_entries > MAX_TRACE_ENTRIES) {
+        max_entries = MAX_TRACE_ENTRIES;
+    }
+
+    available_bytes = max_entries * sizeof(struct pim_trace_entry);
+
+    /* Check for End of File */
+    if (*ppos >= available_bytes) {
+        return 0;
+    }
+
+    /* Truncate read if user asks for more than we have left */
+    if (*ppos + count > available_bytes) {
+        count = available_bytes - *ppos;
+    }
+
+    if (copy_to_user(buf, ((char *)trace_buffer) + *ppos, count)) {
+        return -EFAULT;
+    }
+
+    *ppos += count;
+    return count;
 }
 
 static long pim_controller_ioctl(struct file *file, unsigned int cmd_type,\
@@ -189,6 +241,8 @@ static int pim_release(struct inode *inode, struct file *file) {
     /* 3. Reset memory usage so the next process can mmap the pool again */
     pim_mem_usage = 0;
 
+    trace_idx = 0;
+
     pr_info(DRV_NAME ": Device closed, resources cleared.\n");
     return 0;
 }
@@ -197,7 +251,8 @@ static const struct file_operations my_fops = {
     .owner = THIS_MODULE,
     .unlocked_ioctl = pim_controller_ioctl,
     .mmap = pim_mmap,
-    .release = pim_release
+    .release = pim_release,
+    .read = pim_read
 };
 
 static struct miscdevice pim_cntr = {

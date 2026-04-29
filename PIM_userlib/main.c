@@ -24,13 +24,19 @@ extern struct bench_t kmean_bench;
 extern struct bench_t matmul_bench;
 extern struct bench_t poly_eval_bench;
 
-void run_bench(struct bench_t *this_bench, struct bench_arg_t args){
+void run_base_bench(struct bench_t *this_bench, struct bench_arg_t args){
     this_bench->init(this_bench, args);
     this_bench->prepare(this_bench);
     this_bench->calc_base(this_bench);
+    this_bench->clean(this_bench);
+    return;
+}
+
+void run_share_bench(struct bench_t *this_bench, struct bench_arg_t args){
+    this_bench->init(this_bench, args);
+    this_bench->prepare(this_bench);
     this_bench->calc_share(this_bench);
     this_bench->clean(this_bench);
-
     return;
 }
 
@@ -136,7 +142,8 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(kmean_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_bench(&kmean_bench, kmean_args);
+        run_share_bench(&kmean_bench, kmean_args);
+        pim_print_traces();
 
 
         // run_bench(&kmean_bench, (struct bench_arg_t){\
@@ -158,7 +165,8 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(matmul_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_bench(&matmul_bench, matmul_args);
+        run_share_bench(&matmul_bench, matmul_args);
+        pim_print_traces();
 
 
     } else if(btype == POLY_EVAL_BENCH){
@@ -172,7 +180,8 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(poly_eval_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_bench(&poly_eval_bench, poly_eval_args);
+        run_share_bench(&poly_eval_bench, poly_eval_args);
+        pim_print_traces();
 
     } else {
         fprintf(stderr, "Unrecognizable bench type %d\n", btype);

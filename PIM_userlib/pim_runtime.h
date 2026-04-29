@@ -35,6 +35,16 @@ struct pim_timing {
     bool           is_penalty [MAX_PIM_UNIT]; /* 1: pim owned; 0: cpu owned */
 };
 
+/* Add this near your other structs */
+struct pim_trace_entry {
+    uint64_t timestamp_ns;
+    int core_id;
+    char cmd;
+};
+
+/* Add the function prototype */
+void pim_print_traces(void);
+
 /* Mirror of kernel ABI */
 struct pim_req_t {
     int  event_fd;

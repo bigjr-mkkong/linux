@@ -1,6 +1,7 @@
 #include "bench.h"
 #include "stdlib.h"
 #include <complex.h>
+#include "stdio.h"
 
 typedef struct {
     float x, y, z;
@@ -62,6 +63,9 @@ void calc_kmeans_base(struct bench_t *this_bench) {
     int NUM_POINTS = this_bench->args.obj_cnt0;
     int K_CLUSTERS = this_bench->args.obj_cnt1;
 
+    struct timespec begin, end;
+    long long elapsed_ns;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     for (int p = 0; p < NUM_POINTS; p++) {
         float min_dist = 1e9;
         int best_cluster = 0;
@@ -80,6 +84,10 @@ void calc_kmeans_base(struct bench_t *this_bench) {
         }
         labels[p] = best_cluster;
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
+    printf("kmean Base Case time: %lld\n", elapsed_ns);
 }
 
 void calc_kmeans_share(struct bench_t *this_bench) {
@@ -98,6 +106,9 @@ void calc_kmeans_share(struct bench_t *this_bench) {
     Point3D cent_cache[K_CLUSTERS];
     int label_cache = 0;
 
+    struct timespec begin, end;
+    long long elapsed_ns;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     // +2 to drain the last two points through calc and write stages
     for (int slot = 0; slot < NUM_POINTS + 2; slot++) {
         int p_w = slot - 2;  // point being written
@@ -131,14 +142,19 @@ void calc_kmeans_share(struct bench_t *this_bench) {
         // Read stage (CPU mode): load next point and all centroids into cache
         if (p_r < NUM_POINTS) {
             pause_core(this_bench->args.user, core_id_p);
-            pause_core(this_bench->args.user, core_id_c);
+            /* pause_core(this_bench->args.user, core_id_c); */
             p_cache = points[p_r];
             for (int j = 0; j < K_CLUSTERS; j++)
                 cent_cache[j] = centroids[j];
             resume_core(this_bench->args.user, core_id_p);
-            resume_core(this_bench->args.user, core_id_c);
+            /* resume_core(this_bench->args.user, core_id_c); */
         }
     }
+
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
+    printf("kmean shared Case time: %lld\n", elapsed_ns);
 }
 
 /* 

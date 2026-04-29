@@ -619,3 +619,39 @@ static void *completer_loop(void *arg) {
     }
     return NULL;
 }
+
+void pim_print_traces(void) {
+    struct pim_trace_entry entries[512]; // Buffer to hold chunks of traces
+    ssize_t bytes_read;
+    off_t current_offset = 0;
+
+    printf("\n=== KERNEL EXECUTION TRACE ===\n");
+
+    while (1) {
+        /* Read a chunk of entries from the kernel */
+        bytes_read = pread(lib.dev_fd, entries, sizeof(entries), current_offset);
+
+        if (bytes_read <= 0) {
+            break; // EOF or error
+        }
+
+        int num_entries = bytes_read / sizeof(struct pim_trace_entry);
+
+        for (int i = 0; i < num_entries; i++) {
+            const char *cmd_name = "UNKNOWN";
+            switch(entries[i].cmd) {
+                case PIM_START:  cmd_name = "PIM_START "; break;
+                case MEM_PAUSE:  cmd_name = "MEM_PAUSE "; break;
+                case MEM_RESUME: cmd_name = "MEM_RESUME"; break;
+            }
+
+            printf("Time: %llu ns | Core %3d | CMD: %s\n",
+                   (unsigned long long)entries[i].timestamp_ns,
+                   entries[i].core_id,
+                   cmd_name);
+        }
+
+        current_offset += bytes_read;
+    }
+    printf("==============================\n\n");
+}

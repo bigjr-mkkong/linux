@@ -1,5 +1,9 @@
 #include "bench.h"
+#include "time.h"
+#include <bits/time.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
 
 
 void init_matmul(struct bench_t *this_bench, struct bench_arg_t args){
@@ -45,6 +49,9 @@ void calc_matmul_share(struct bench_t *this_bench) {
     double B_tile[T][T];
     double result_cache[T][T];
 
+    struct timespec begin, end;
+    long long elapsed_ns;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     // +2 to drain last two tiles through calc and write stages
     for (int slot = 0; slot < total_tiles + 2; slot++) {
         int s_w = slot - 2;
@@ -102,6 +109,10 @@ void calc_matmul_share(struct bench_t *this_bench) {
             resume_core(this_bench->args.user, core_id_b);
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
+    printf("MatMul shared Case time: %lld\n", elapsed_ns);
 }
 
 void calc_matmul_base(struct bench_t *this_bench) {
@@ -122,6 +133,9 @@ void calc_matmul_base(struct bench_t *this_bench) {
     double B_tile[T][T];
     double result_cache[T][T];
 
+    struct timespec begin, end;
+    long long elapsed_ns;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     // +2 to drain last two tiles through calc and write stages
     for (int slot = 0; slot < total_tiles + 2; slot++) {
         int s_w = slot - 2;
@@ -179,6 +193,10 @@ void calc_matmul_base(struct bench_t *this_bench) {
             // resume_core(this_bench->args.user, core_id_b);
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
+    printf("MatMul Base Case time: %lld\n", elapsed_ns);
 }
 
 

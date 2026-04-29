@@ -1,4 +1,5 @@
 #include "bench.h"
+#include "stdio.h"
 #include <stdlib.h>
 #include "pim_runtime.h"
 
@@ -37,6 +38,9 @@ void calc_poly_eval_base(struct bench_t *this_bench) {
     float X_cache[16];
     float result_cache[16];
 
+    struct timespec begin, end;
+    long long elapsed_ns;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     // +2 to drain last two chunks through calc and write stages
     for (int slot = 0; slot < total_slots + 2; slot++) {
         int s_w = slot - 2;
@@ -69,6 +73,10 @@ void calc_poly_eval_base(struct bench_t *this_bench) {
                 X_cache[j] = X[base_r + j];
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
+    printf("Poly eval Base Case time: %lld\n", elapsed_ns);
 }
 
 void calc_poly_eval_share(struct bench_t *this_bench) {
@@ -85,6 +93,9 @@ void calc_poly_eval_share(struct bench_t *this_bench) {
     float result_cache[16];
 
     // +2 to drain last two chunks through calc and write stages
+    struct timespec begin, end;
+    long long elapsed_ns;
+    clock_gettime(CLOCK_MONOTONIC, &begin);
     for (int slot = 0; slot < total_slots + 2; slot++) {
         int s_w = slot - 2;
         int s_c = slot - 1;
@@ -120,6 +131,10 @@ void calc_poly_eval_share(struct bench_t *this_bench) {
             resume_core(this_bench->args.user, core_id_x);
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &end);
+
+    elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
+    printf("Poly eval shared Case time: %lld\n", elapsed_ns);
 }
 
 void clean_poly_eval(struct bench_t *this_bench){

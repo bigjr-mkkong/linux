@@ -128,37 +128,54 @@ static void *user_task(void *arg)
         printf("Running KMEAN_BENCH\n");
 #define NUM_POINTS 500000
 #define K_CLUSTERS 32
-        run_bench(&kmean_bench, (struct bench_arg_t){\
-                .obj_cnt0 = NUM_POINTS,\
-                .obj_cnt1 = K_CLUSTERS,\
-                .obj_cnt2 = NUM_POINTS\
-                });
+        struct bench_arg_t kmean_args = {
+        .obj_cnt0 = NUM_POINTS,\
+                    .obj_cnt1 = K_CLUSTERS,\
+                    .obj_cnt2 = NUM_POINTS,\
+                    .user = user,\
+        };
+        memcpy(kmean_args.avail_cores, avail_cores, sizeof(int) * 16);
+        run_bench(&kmean_bench, kmean_args);
+
+
+        // run_bench(&kmean_bench, (struct bench_arg_t){\
+        //         .obj_cnt0 = NUM_POINTS,\
+        //         .obj_cnt1 = K_CLUSTERS,\
+        //         .obj_cnt2 = NUM_POINTS\
+        //         });
 
     } else if(btype == MATMUL_BENCH){
         printf("Running MATMUL_BENCH\n");
 #define MAT_N 1024
 #define TILE_SIZE 32
 
-    run_bench(&matmul_bench, (struct bench_arg_t){
-            .obj_cnt0 = MAT_N,
-            .obj_cnt1 = 0, //Not in use
-            .obj_cnt2 = 0,// Not in use
-            .config_const0 = TILE_SIZE
-            });
+        struct bench_arg_t matmul_args = {
+        .obj_cnt0 = MAT_N,\
+                    .obj_cnt1 = 0,\ 
+                    .obj_cnt2 = 0,\ 
+                    .config_const0 = TILE_SIZE,\
+                    .user = user,\
+        };
+        memcpy(matmul_args.avail_cores, avail_cores, sizeof(int) * 16);
+        run_bench(&matmul_bench, matmul_args);
+
+
     } else if(btype == POLY_EVAL_BENCH){
         printf("Running POLY_EVAL_BENCH\n");
 #define ARRAY_SIZE 1000000 // Tune for cache size
+        struct bench_arg_t poly_eval_args = {
+        .obj_cnt0 = ARRAY_SIZE,\
+                    .obj_cnt1 = 0,\ 
+                    .obj_cnt2 = 0,\ 
+                    .config_const0 = 0, // not in use
+                    .user = user,\
+        };
+        memcpy(poly_eval_args.avail_cores, avail_cores, sizeof(int) * 16);
+        run_bench(&poly_eval_bench, poly_eval_args);
 
-    run_bench(&poly_eval_bench, (struct bench_arg_t){
-            .obj_cnt0 = ARRAY_SIZE, // Number of terms in the polynomial
-            .obj_cnt1 = 0, // Not in use
-            .obj_cnt2 = 0, // Not in use
-            .config_const0 = 0 // Not in use
-            });
     } else {
         fprintf(stderr, "Unrecognizable bench type %d\n", btype);
     }
-
 #endif
 
 done:

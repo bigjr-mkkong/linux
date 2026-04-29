@@ -13,6 +13,9 @@ struct bench_arg_t{
     //calculated by initialization code
     void *mem0, *mem1, *mem2;
     size_t size0, size1, size2;
+
+    struct pim_user *user;
+    int avail_cores[16];
 };
 
 struct bench_t{

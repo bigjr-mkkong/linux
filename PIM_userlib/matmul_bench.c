@@ -34,9 +34,18 @@ void calc_matmul(struct bench_t *this_bench) {
     double *C = (double*)this_bench->args.mem2;
     int TILE_SIZE = this_bench->args.config_const0;
 
+    // assume each memory lcoation match to same core for simplicity
+    int core_id_a = this_bench->args.avail_cores[0];
+    int core_id_b = this_bench->args.avail_cores[1];
+    int core_id_c = this_bench->args.avail_cores[2];
+
     for (size_t i = 0; i < N; i += TILE_SIZE) {
         for (size_t j = 0; j < N; j += TILE_SIZE) {
             for (size_t k = 0; k < N; k += TILE_SIZE) {
+                pause_core(this_bench->args.user, core_id_a);
+                pause_core(this_bench->args.user, core_id_b);
+                pause_core(this_bench->args.user, core_id_c);
+
                 for (size_t ii = i; ii < i + TILE_SIZE && ii < N; ii++) {
                     for (size_t jj = j; jj < j + TILE_SIZE && jj < N; jj++) {
                         double sum = 0;
@@ -46,6 +55,10 @@ void calc_matmul(struct bench_t *this_bench) {
                         C[ii * N + jj] += sum;
                     }
                 }
+
+                resume_core(this_bench->args.user, core_id_a);
+                resume_core(this_bench->args.user, core_id_b);
+                resume_core(this_bench->args.user, core_id_c);
             }
         }
     }

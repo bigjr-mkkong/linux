@@ -61,11 +61,18 @@ void calc_kmeans(struct bench_t *this_bench) {
     int NUM_POINTS = this_bench->args.obj_cnt0;
     int K_CLUSTERS = this_bench->args.obj_cnt1;
 
+    int core_id_p = this_bench->args.avail_cores[0]; 
+    int core_id_c = this_bench->args.avail_cores[1]; 
+
     for (int p = 0; p < NUM_POINTS; p++) {
         float min_dist = 1e9;
         int best_cluster = 0;
         
         for (int c = 0; c < K_CLUSTERS; c++) {
+            if (c % 16 == 0) {
+                pause_core(this_bench->args.user, core_id_c);
+                pause_core(this_bench->args.user, core_id_p);
+            }
             float dx = points[p].x - centroids[c].x;
             float dy = points[p].y - centroids[c].y;
             float dz = points[p].z - centroids[c].z;
@@ -75,6 +82,11 @@ void calc_kmeans(struct bench_t *this_bench) {
             if (dist < min_dist) {
                 min_dist = dist;
                 best_cluster = c;
+            }
+
+            if (c % 16 == 15 || c == K_CLUSTERS - 1) {
+                resume_core(this_bench->args.user, core_id_c);
+                resume_core(this_bench->args.user, core_id_p);
             }
         }
         labels[p] = best_cluster;

@@ -35,6 +35,7 @@ static struct {
 
     int next_user_id;
     int core_owner[MAX_PIM_UNIT];
+    bool core_started[MAX_PIM_UNIT];
     pim_user_t *core_user[MAX_PIM_UNIT]; /* Track owner explicitly for bg_check_loop */
 
     pthread_t  bg_submitter_tid;
@@ -238,6 +239,7 @@ int pim_alloc_cores(pim_user_t *user, int *allocated_core_ids, int count) {
 
         lib.core_owner[i]          = user->user_id;
         lib.core_user[i]           = user;  // Store user context for background loop
+        lib.core_started[i] = true;
         user->owns_core[i]         = true;
         user->core2chunk[i]        = chunk_idx;
         user->core_mode[i]         = false;
@@ -268,6 +270,7 @@ void pim_free_cores(pim_user_t *user) {
         lib.core_user[i]                     = NULL;
         lib.chunk_free[user->core2chunk[i]]  = true;
 
+        lib.core_started[i] = false;
         user->owns_core[i]                   = false;
         user->core2chunk[i]                  = -1;
         user->core_mode[i]                   = false;
@@ -528,6 +531,9 @@ static void flush_pending(void) {
     struct timeval now;
     gettimeofday(&now, NULL);
     for (int i = 0; i < MAX_PIM_UNIT; i++) {
+        if(snapshot[i] == PIM_START){
+            lib.core_started[i] = true;
+        }
         if (snapshot[i] == MEM_PAUSE) {
             lib.timing[new_idx].last_pause[i]  = now;
             lib.timing[new_idx].is_penalty[i]  = false;
@@ -549,13 +555,14 @@ static void *bg_check_loop(void *arg) {
             if (lib.pfn2core_id[i] == -1) continue;
 
             pim_user_t *u = lib.core_user[i];
-            if (!u) continue;
+            if(u == NULL || lib.core_owner[i] == -1){
+                continue;
+            }
 
             /* ONLY force resume if the host currently has it paused */
-            if (!u->core_mode[i]) {
+            if (lib.core_started[i] && !u->core_mode[i]) {
                 int idx = atomic_load(&lib.timing_idx);
                 if (check(i) == FAIL && !lib.timing[idx].is_penalty[i]) {
-                    printf("Watchdog awakend\n");
                     resume_core(u, i);
                 }
             }

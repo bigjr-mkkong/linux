@@ -1,5 +1,6 @@
 #include "asm-generic/errno-base.h"
 #include "linux/mm.h"
+#include "linux/stddef.h"
 #include "linux/timekeeping.h"
 #include "linux/util_macros.h"
 #include "linux/vmalloc.h"
@@ -47,56 +48,60 @@ static void wthread_func(struct work_struct *work) {
 
     // I need to replace all kfifo in/out with spinlock version
 
-    if(kfifo_is_empty_spinlocked(&req_fifo, &req_fifo_lock)){
-        return;
-    }
+    while(true){
 
-    if(kfifo_out_locked(&req_fifo, &cmd, sizeof(struct fifo_elem_t), &req_fifo_lock) != sizeof(struct fifo_elem_t)) {
-        pr_warn("[PIM wthread] kfifo failed to provide command\n");
-        return;
-    }
+        if(kfifo_is_empty_spinlocked(&req_fifo, &req_fifo_lock)){
+            break;
+        }
 
-    for(int i=0; i<MAX_PIM_UNIT; i++) {
-        int sub_cmd = cmd.user_req.req_list[i];
-        u64 ts_ns = 0;
-        switch(sub_cmd) {
-            case PIM_NOP:
-            {
-                break;
+        if(kfifo_out_locked(&req_fifo, &cmd, sizeof(struct fifo_elem_t), &req_fifo_lock) != sizeof(struct fifo_elem_t)) {
+            pr_warn("[PIM wthread] kfifo failed to provide command\n");
+            break;
+        }
+
+        for(int i=0; i<MAX_PIM_UNIT; i++) {
+            int sub_cmd = cmd.user_req.req_list[i];
+            u64 ts_ns = 0;
+            switch(sub_cmd) {
+                case PIM_NOP:
+                {
+                    break;
+                }
+                case PIM_START:
+                {
+                    ts_ns = ktime_get_ns();
+                    pr_info(DRV_NAME ": PIM_START @ %lld\n", ts_ns);
+                    break;
+                }
+                case MEM_PAUSE:
+                {
+                    ts_ns = ktime_get_ns();
+                    pr_info(DRV_NAME ": MEM_PAUSE @ %lld\n", ts_ns);
+                    break;
+                }
+                case MEM_RESUME:
+                {
+                    ts_ns = ktime_get_ns();
+                    pr_info(DRV_NAME ": MEM_RESUME @ %lld\n", ts_ns);
+                    break;
+                }
+                case PIM_QUERY:
+                {
+                    ts_ns = ktime_get_ns();
+                    pr_info(DRV_NAME ": PIM_QUERY @ %lld\n", ts_ns);
+                    break;
+                }
+                default:
+                    pr_warn(DRV_NAME " Unidentified command for pim unit %d: %d\n", \
+                            i, sub_cmd);
             }
-            case PIM_START:
-            {
-                ts_ns = ktime_get_ns();
-                pr_info(DRV_NAME ": PIM_START @ %lld\n", ts_ns);
-                break;
-            }
-            case MEM_PAUSE:
-            {
-                ts_ns = ktime_get_ns();
-                pr_info(DRV_NAME ": MEM_PAUSE @ %lld\n", ts_ns);
-                break;
-            }
-            case MEM_RESUME:
-            {
-                ts_ns = ktime_get_ns();
-                pr_info(DRV_NAME ": MEM_RESUME @ %lld\n", ts_ns);
-                break;
-            }
-            case PIM_QUERY:
-            {
-                ts_ns = ktime_get_ns();
-                pr_info(DRV_NAME ": PIM_QUERY @ %lld\n", ts_ns);
-                break;
-            }
-            default:
-                pr_warn(DRV_NAME " Unidentified command for pim unit %d: %d\n", \
-                        i, sub_cmd);
+        }
+
+        if(cmd.ctx){
+            eventfd_signal(cmd.ctx);
+            eventfd_ctx_put(cmd.ctx);
         }
     }
-
-    eventfd_signal(cmd.ctx);
-
-    eventfd_ctx_put(cmd.ctx);
 
     return;
 }
@@ -163,10 +168,36 @@ static int pim_mmap(struct file *filp, struct vm_area_struct *vma) {
     return 0;
 }
 
+
+
+
+static int pim_release(struct inode *inode, struct file *file) {
+    struct fifo_elem_t cmd;
+
+    /* 1. Wait for any currently executing work to finish */
+    flush_workqueue(wthread_wq);
+
+    /* 2. Drain the FIFO and release any lingering eventfds to prevent memory leaks */
+    spin_lock(&req_fifo_lock);
+    while (kfifo_out(&req_fifo, &cmd, sizeof(cmd)) == sizeof(cmd)) {
+        if (cmd.ctx) {
+            eventfd_ctx_put(cmd.ctx);
+        }
+    }
+    spin_unlock(&req_fifo_lock);
+
+    /* 3. Reset memory usage so the next process can mmap the pool again */
+    pim_mem_usage = 0;
+
+    pr_info(DRV_NAME ": Device closed, resources cleared.\n");
+    return 0;
+}
+
 static const struct file_operations my_fops = {
     .owner = THIS_MODULE,
     .unlocked_ioctl = pim_controller_ioctl,
-    .mmap = pim_mmap
+    .mmap = pim_mmap,
+    .release = pim_release
 };
 
 static struct miscdevice pim_cntr = {
@@ -207,7 +238,6 @@ static int __init pim_controller_init(void)
     pr_info(DRV_NAME ": Module loaded. /dev/%s created.\n", DRV_NAME);
     return 0;
 }
-
 static void __exit pim_controller_exit(void)
 {
     misc_deregister(&pim_cntr);

@@ -1,2 +1,2 @@
 #! /bin/sh
-bear -- make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j16
+bear -- make ARCH=riscv CROSS_COMPILE=riscv64-linux-gnu- -j$(nproc)

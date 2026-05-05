@@ -93,81 +93,75 @@ void calc_kmeans_base(struct bench_t *this_bench) {
 }
 
 void calc_kmeans_share(struct bench_t *this_bench) {
-    Point3D *points    = (Point3D*)(this_bench->args.mem0);
+    /* Setup kmean variables */
+    Point3D *points = (Point3D*)(this_bench->args.mem0);
     Point3D *centroids = (Point3D*)(this_bench->args.mem1);
-    int     *labels    = (int*)(this_bench->args.mem2);
+    int *labels = (int*)(this_bench->args.mem2);
 
     int NUM_POINTS = this_bench->args.obj_cnt0;
     int K_CLUSTERS = this_bench->args.obj_cnt1;
 
-    int core_id_p = this_bench->args.avail_cores[0];
-    int core_id_c = this_bench->args.avail_cores[1];
-    int core_id_l = this_bench->args.avail_cores[2];
+    // Calculate total number of chunks based on POINT_BATCH
+    int total_slots = (NUM_POINTS + POINT_BATCH - 1) / POINT_BATCH;
 
-    int num_batches = (NUM_POINTS + POINT_BATCH - 1) / POINT_BATCH;
-
-    Point3D p_cache[POINT_BATCH];
-    Point3D cent_cache[K_CLUSTERS];
-    int label_cache[POINT_BATCH];
+    // Imaginary caches for the current chunk
+    Point3D points_cache[POINT_BATCH];
+    int labels_cache[POINT_BATCH];
 
     struct timespec begin, end;
     long long elapsed_ns;
+
+    int mode = 0; // 0 -> READ, 1 -> CALC, 2 -> WRITE
+    int cache_cnt = 0; // Track which chunk we are processing
+
     clock_gettime(CLOCK_MONOTONIC, &begin);
-    // +2 to drain the last two points through calc and write stages
-    for (int slot = 0; slot < NUM_POINTS + 2; slot++) {
-        int p_w = slot - 2;  // point being written
-        int p_c = slot - 1;  // point being computed
-        int p_r = slot;      // point being read
 
-        // Write stage (CPU mode): write labels computed two slots ago
-        if (b_w >= 0 && b_w < num_batches) {
-            int base = b_w * POINT_BATCH;
-            int count = (base + POINT_BATCH <= NUM_POINTS) ? POINT_BATCH : NUM_POINTS - base;
-            pause_core(this_bench->args.user, core_id_l);
-            for (int j = 0; j < count; j++)
-                labels[base + j] = label_cache[j];
-            resume_core(this_bench->args.user, core_id_l);
-        }
+    while (cache_cnt < total_slots) {
+        int elems_to_process = (cache_cnt == total_slots - 1) ? (NUM_POINTS - cache_cnt * POINT_BATCH) : POINT_BATCH;
 
-        // Calc stage (PIM mode): compute distances for the cached batch
-        if (b_c >= 0 && b_c < num_batches) {
-            int base = b_c * POINT_BATCH;
-            int count = (base + POINT_BATCH <= NUM_POINTS) ? POINT_BATCH : NUM_POINTS - base;
-            for (int p = 0; p < count; p++) {
+        if (mode == 0) {
+            for(int i = 0; i < elems_to_process; i++){
+                points_cache[i] = points[cache_cnt * POINT_BATCH + i];
+            }
+            mode = 1;
+
+        } else if (mode == 1) {
+            for(int i = 0; i < elems_to_process; i++){
                 float min_dist = 1e9;
                 int best_cluster = 0;
+
                 for (int c = 0; c < K_CLUSTERS; c++) {
-                    float dx = p_cache[p].x - cent_cache[c].x;
-                    float dy = p_cache[p].y - cent_cache[c].y;
-                    float dz = p_cache[p].z - cent_cache[c].z;
-                    float dist = dx*dx + dy*dy + dz*dz;
+                    float dx = points_cache[i].x - centroids[c].x;
+                    float dy = points_cache[i].y - centroids[c].y;
+                    float dz = points_cache[i].z - centroids[c].z;
+
+                    float dist = (dx * dx) + (dy * dy) + (dz * dz);
+
                     if (dist < min_dist) {
                         min_dist = dist;
                         best_cluster = c;
                     }
                 }
-                label_cache[p] = best_cluster;
+                labels_cache[i] = best_cluster;
             }
-        }
+            mode = 2;
 
-        // Read stage (CPU mode): load next batch of points and all centroids
-        if (b_r < num_batches) {
-            int base = b_r * POINT_BATCH;
-            int count = (base + POINT_BATCH <= NUM_POINTS) ? POINT_BATCH : NUM_POINTS - base;
-            pause_core(this_bench->args.user, core_id_p);
-            /* pause_core(this_bench->args.user, core_id_c); */
-            p_cache = points[p_r];
-            for (int j = 0; j < K_CLUSTERS; j++)
-                cent_cache[j] = centroids[j];
-            resume_core(this_bench->args.user, core_id_p);
-            /* resume_core(this_bench->args.user, core_id_c); */
+        } else if (mode == 2) {
+            for(int i = 0; i < elems_to_process; i++){
+                labels[cache_cnt * POINT_BATCH + i] = labels_cache[i];
+            }
+            mode = 0;
+            cache_cnt++;
+
+        } else {
+            fprintf(stderr, "calc_kmeans_share(): Invalid state: %d\n", mode);
+            exit(-1);
         }
     }
-
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
-    printf("kmean shared Case time: %lld\n", elapsed_ns);
+    printf("kmean Share Case time: %lld\n", elapsed_ns);
 }
 
 /* 

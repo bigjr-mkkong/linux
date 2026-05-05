@@ -142,7 +142,7 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(kmean_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_share_bench(&kmean_bench, kmean_args);
+        run_base_bench(&kmean_bench, kmean_args);
         pim_print_traces();
 
 
@@ -155,7 +155,7 @@ static void *user_task(void *arg)
     } else if(btype == MATMUL_BENCH){
         printf("Running MATMUL_BENCH\n");
 #define MAT_N 128
-#define TILE_SIZE 64
+#define TILE_SIZE 32
 
         struct bench_arg_t matmul_args = {
         .obj_cnt0 = MAT_N,\
@@ -165,7 +165,7 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(matmul_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_share_bench(&matmul_bench, matmul_args);
+        run_base_bench(&matmul_bench, matmul_args);
         pim_print_traces();
 
 
@@ -180,7 +180,7 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(poly_eval_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_share_bench(&poly_eval_bench, poly_eval_args);
+        run_base_bench(&poly_eval_bench, poly_eval_args);
         pim_print_traces();
 
     } else {

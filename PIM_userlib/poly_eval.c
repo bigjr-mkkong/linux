@@ -42,37 +42,11 @@ void calc_poly_eval_base(struct bench_t *this_bench) {
     struct timespec begin, end;
     long long elapsed_ns;
     clock_gettime(CLOCK_MONOTONIC, &begin);
-    // +2 to drain last two chunks through calc and write stages
-    for (int slot = 0; slot < total_slots + 2; slot++) {
-        int s_w = slot - 2;
-        int s_c = slot - 1;
-        int s_r = slot;
+    for (int i = 0; i < N; i++) {
+        float x = X[i];
+        float result = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
 
-        // Write stage (CPU mode): write result_cache to Y
-        if (s_w >= 0 && s_w < total_slots) {
-            int base_w = s_w * CACHE_ELEMS;
-            int count_w = (base_w + CACHE_ELEMS <= N) ? CACHE_ELEMS : N - base_w;
-            for (int j = 0; j < count_w; j++)
-                Y[base_w + j] = result_cache[j];
-        }
-
-        // Calc stage (PIM mode): compute from X_cache into result_cache
-        if (s_c >= 0 && s_c < total_slots) {
-            int base_c = s_c * CACHE_ELEMS;
-            int count_c = (base_c + CACHE_ELEMS <= N) ? CACHE_ELEMS : N - base_c;
-            for (int j = 0; j < count_c; j++) {
-                float x = X_cache[j];
-                result_cache[j] = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
-            }
-        }
-
-        // Read stage (CPU mode): load CACHE_ELEMS X values into X_cache
-        if (s_r < total_slots) {
-            int base_r = s_r * CACHE_ELEMS;
-            int count_r = (base_r + CACHE_ELEMS <= N) ? CACHE_ELEMS : N - base_r;
-            for (int j = 0; j < count_r; j++)
-                X_cache[j] = X[base_r + j];
-        }
+        Y[i] = result;
     }
     clock_gettime(CLOCK_MONOTONIC, &end);
 
@@ -86,56 +60,51 @@ void calc_poly_eval_share(struct bench_t *this_bench) {
     int N = (int)this_bench->args.obj_cnt0;
 
     float c5 = 2.5f, c4 = -1.2f, c3 = 3.4f, c2 = -0.5f, c1 = 1.1f, c0 = 4.0f;
-    int core_id_x = this_bench->args.avail_cores[0];
-    int core_id_y = this_bench->args.avail_cores[1];
 
     int total_slots = (N + CACHE_ELEMS - 1) / CACHE_ELEMS;
     float X_cache[CACHE_ELEMS];
     float result_cache[CACHE_ELEMS];
 
-    // +2 to drain last two chunks through calc and write stages
     struct timespec begin, end;
     long long elapsed_ns;
+
+    int mode = 0; // 0 -> READ, 1 -> CALC, 2 -> WRITE
+    int cache_cnt = 0; // Track which chunk we are currently processing
+
     clock_gettime(CLOCK_MONOTONIC, &begin);
-    for (int slot = 0; slot < total_slots + 2; slot++) {
-        int s_w = slot - 2;
-        int s_c = slot - 1;
-        int s_r = slot;
 
-        // Write stage (CPU mode): write result_cache to Y
-        if (s_w >= 0 && s_w < total_slots) {
-            int base_w = s_w * CACHE_ELEMS;
-            int count_w = (base_w + CACHE_ELEMS <= N) ? CACHE_ELEMS : N - base_w;
-            pause_core(this_bench->args.user, core_id_y);
-            for (int j = 0; j < count_w; j++)
-                Y[base_w + j] = result_cache[j];
-            resume_core(this_bench->args.user, core_id_y);
-        }
+    while (cache_cnt < total_slots) {
+        int cache_sz = (cache_cnt == total_slots - 1) ? (N - cache_cnt * CACHE_ELEMS) : CACHE_ELEMS;
 
-        // Calc stage (PIM mode): compute from X_cache into result_cache
-        if (s_c >= 0 && s_c < total_slots) {
-            int base_c = s_c * CACHE_ELEMS;
-            int count_c = (base_c + CACHE_ELEMS <= N) ? CACHE_ELEMS : N - base_c;
-            for (int j = 0; j < count_c; j++) {
-                float x = X_cache[j];
-                result_cache[j] = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
+        if(mode == 0) {
+            for(int i = 0; i < cache_sz; i++){
+                X_cache[i] = X[cache_cnt * CACHE_ELEMS + i];
             }
-        }
+            mode = 1;
+        } else if(mode == 1){
+            for(int i = 0; i < cache_sz; i++){
+                float x = X_cache[i];
+                result_cache[i] = ((((c5 * x + c4) * x + c3) * x + c2) * x + c1) * x + c0;
+            }
+            mode = 2;
 
-        // Read stage (CPU mode): load CACHE_ELEMS X values into X_cache
-        if (s_r < total_slots) {
-            int base_r = s_r * CACHE_ELEMS;
-            int count_r = (base_r + CACHE_ELEMS <= N) ? CACHE_ELEMS : N - base_r;
-            pause_core(this_bench->args.user, core_id_x);
-            for (int j = 0; j < count_r; j++)
-                X_cache[j] = X[base_r + j];
-            resume_core(this_bench->args.user, core_id_x);
+        } else if(mode == 2){
+            for(int i = 0; i < cache_sz; i++){
+                Y[cache_cnt * CACHE_ELEMS + i] = result_cache[i];
+            }
+            mode = 0;
+            cache_cnt++;
+
+        } else {
+            fprintf(stderr, "calc_poly_eval(): Invalid state: %d\n", mode);
+            exit(-1);
         }
     }
+
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     elapsed_ns = (end.tv_sec - begin.tv_sec) * 1000000000LL + (end.tv_nsec - begin.tv_nsec);
-    printf("Poly eval shared Case time: %lld\n", elapsed_ns);
+    printf("Poly eval Share Case time: %lld\n", elapsed_ns);
 }
 
 void clean_poly_eval(struct bench_t *this_bench){

@@ -142,7 +142,7 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(kmean_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_base_bench(&kmean_bench, kmean_args);
+        run_share_bench(&kmean_bench, kmean_args);
         pim_print_traces();
 
 
@@ -165,7 +165,7 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(matmul_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_base_bench(&matmul_bench, matmul_args);
+        run_share_bench(&matmul_bench, matmul_args);
         pim_print_traces();
 
 
@@ -180,7 +180,7 @@ static void *user_task(void *arg)
                     .user = user,\
         };
         memcpy(poly_eval_args.avail_cores, avail_cores, sizeof(int) * 16);
-        run_base_bench(&poly_eval_bench, poly_eval_args);
+        run_share_bench(&poly_eval_bench, poly_eval_args);
         pim_print_traces();
 
     } else {
